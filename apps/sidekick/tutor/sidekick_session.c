@@ -1,0 +1,87 @@
+#include "sidekick_session.h"
+
+#include "sidekick_audio.h"
+#include "sidekick_config.h"
+#include "sidekick_log.h"
+
+static SIDEKICK_SESSION_STATE_E s_state      = SIDEKICK_SESSION_IDLE;
+static SIDEKICK_TUTOR_MODE_E    s_mode       = SIDEKICK_DEFAULT_TUTOR_MODE;
+static uint32_t                 s_tick_count = 0;
+
+OPERATE_RET sidekick_session_init(void)
+{
+    s_state      = SIDEKICK_SESSION_OBSERVING;
+    s_mode       = SIDEKICK_DEFAULT_TUTOR_MODE;
+    s_tick_count = 0;
+    SIDEKICK_LOGI("tutor", "session initialized mode=%s", sidekick_session_mode_name(s_mode));
+    return OPRT_OK;
+}
+
+void sidekick_session_tick(void)
+{
+    s_tick_count++;
+
+    if ((s_tick_count % 5) == 0) {
+        SIDEKICK_LOGI("tutor", "mode=%s state=%d audio_frames=%u", sidekick_session_mode_name(s_mode), (int)s_state,
+                      (unsigned int)sidekick_audio_frame_count());
+    }
+}
+
+SIDEKICK_SESSION_STATE_E sidekick_session_state(void)
+{
+    return s_state;
+}
+
+SIDEKICK_TUTOR_MODE_E sidekick_session_mode(void)
+{
+    return s_mode;
+}
+
+const char *sidekick_session_mode_name(SIDEKICK_TUTOR_MODE_E mode)
+{
+    switch (mode) {
+    case SIDEKICK_TUTOR_MODE_ACTIVE:
+        return "active";
+    case SIDEKICK_TUTOR_MODE_HINT:
+        return "hint";
+    case SIDEKICK_TUTOR_MODE_SUMMARY:
+        return "summary";
+    default:
+        return "unknown";
+    }
+}
+
+void sidekick_session_set_mode(SIDEKICK_TUTOR_MODE_E mode)
+{
+    if ((mode < SIDEKICK_TUTOR_MODE_ACTIVE) || (mode > SIDEKICK_TUTOR_MODE_SUMMARY)) {
+        SIDEKICK_LOGW("tutor", "ignore invalid mode=%d", (int)mode);
+        return;
+    }
+
+    if (s_mode == mode) {
+        return;
+    }
+
+    s_mode = mode;
+    SIDEKICK_LOGI("tutor", "mode changed to %s", sidekick_session_mode_name(s_mode));
+}
+
+void sidekick_session_next_mode(void)
+{
+    SIDEKICK_TUTOR_MODE_E next = SIDEKICK_TUTOR_MODE_HINT;
+
+    switch (s_mode) {
+    case SIDEKICK_TUTOR_MODE_ACTIVE:
+        next = SIDEKICK_TUTOR_MODE_HINT;
+        break;
+    case SIDEKICK_TUTOR_MODE_HINT:
+        next = SIDEKICK_TUTOR_MODE_SUMMARY;
+        break;
+    case SIDEKICK_TUTOR_MODE_SUMMARY:
+    default:
+        next = SIDEKICK_TUTOR_MODE_ACTIVE;
+        break;
+    }
+
+    sidekick_session_set_mode(next);
+}
