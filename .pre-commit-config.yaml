@@ -1,0 +1,47 @@
+default_install_hook_types:
+  - pre-commit
+
+exclude: >
+  (?x)^(
+    \.venv/|
+    \.uv-cache/|
+    \.uv-python/|
+    \.git/|
+    dist/|
+    build/|
+    \.build/|
+    platform/[^/]+/|
+    src/tal_kv/FlashDB/|
+    src/tal_kv/littlefs/|
+    src/libcjson/cJSON/|
+    src/common/backoffAlgorithm/|
+    src/liblwip/|
+    src/libhttp/|
+    src/libmqtt/|
+    src/liblvgl/
+  )
+
+repos:
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v6.0.0
+    hooks:
+      - id: check-added-large-files
+      - id: check-ast
+      - id: check-case-conflict
+      - id: check-json
+      - id: check-merge-conflict
+      - id: check-symlinks
+      - id: check-toml
+      - id: check-yaml
+      - id: debug-statements
+      - id: end-of-file-fixer
+      - id: mixed-line-ending
+        args: [--fix=lf]
+      - id: trailing-whitespace
+        exclude: \.(md|markdown)$
+
+  - repo: https://github.com/pre-commit/mirrors-clang-format
+    rev: v22.1.5
+    hooks:
+      - id: clang-format
+        types_or: [c, c++]
