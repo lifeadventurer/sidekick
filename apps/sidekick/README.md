@@ -9,13 +9,15 @@ This app is the product scaffold. Keep hardware bring-up experiments in
 ## Current Scope
 
 - Register T5AI board hardware.
-- Start camera preview on the LCD when the camera/LCD module is enabled.
-- Open microphone input and count captured PCM frames.
-- Start in Hint Coach mode by default.
-- Poll the touch panel and cycle tutor modes on touch:
+- Show the SideKick home screen on the LCD with LVGL.
+- Use touch on the home screen to cycle tutor modes:
   `Active -> Hint -> Summary`.
+- Open microphone input and count captured PCM frames.
+- Play a short startup chime through the speaker.
+- Start in Hint Coach mode by default.
 - Keep tutor orchestration as a small state-machine placeholder.
-- Defer speaker validation until the external speaker module is available.
+- Keep camera preview wired but disabled by default while the home screen owns
+  the display.
 
 ## Build
 
@@ -43,4 +45,6 @@ module and camera:
 CONFIG_BOARD_CHOICE_T5AI=y
 CONFIG_TUYA_T5AI_BOARD_EX_MODULE_35565LCD=y
 CONFIG_ENABLE_EX_MODULE_CAMERA=y
+CONFIG_ENABLE_LIBLVGL=y
+CONFIG_LVGL_ENABLE_TP=y
 ```

@@ -22,10 +22,19 @@ static void sidekick_user_main(void)
     SIDEKICK_LOGI("main", "platform=%s board=%s", PLATFORM_CHIP, PLATFORM_BOARD);
 
     TUYA_CALL_ERR_LOG(sidekick_hardware_init());
-    TUYA_CALL_ERR_LOG(sidekick_camera_preview_start());
-    TUYA_CALL_ERR_LOG(sidekick_audio_input_start());
     TUYA_CALL_ERR_LOG(sidekick_session_init());
     TUYA_CALL_ERR_LOG(sidekick_ui_start());
+    TUYA_CALL_ERR_LOG(sidekick_audio_input_start());
+
+#if SIDEKICK_ENABLE_STARTUP_CHIME
+    TUYA_CALL_ERR_LOG(sidekick_audio_play_startup_chime());
+#endif
+
+#if SIDEKICK_ENABLE_CAMERA_PREVIEW
+    TUYA_CALL_ERR_LOG(sidekick_camera_preview_start());
+#else
+    SIDEKICK_LOGI("camera", "camera preview deferred; home screen owns display");
+#endif
 
     while (1) {
         sidekick_ui_poll();
