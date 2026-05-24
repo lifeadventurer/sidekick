@@ -6,6 +6,9 @@ import (
 	"crypto/sha256"
 	"encoding/json"
 	"fmt"
+	"image"
+	"image/color"
+	"image/jpeg"
 	"io"
 	"mime"
 	"mime/multipart"
@@ -146,6 +149,46 @@ func TestFramePersistCapture(t *testing.T) {
 	}
 	if !bytes.Equal(saved, body) {
 		t.Fatalf("saved capture bytes mismatch")
+	}
+}
+
+func TestRotateJPEG180(t *testing.T) {
+	source := image.NewRGBA(image.Rect(0, 0, 40, 40))
+	for y := 0; y < 40; y++ {
+		for x := 0; x < 40; x++ {
+			switch {
+			case x < 20 && y < 20:
+				source.Set(x, y, color.RGBA{R: 255, A: 255})
+			case x >= 20 && y >= 20:
+				source.Set(x, y, color.RGBA{B: 255, A: 255})
+			default:
+				source.Set(x, y, color.RGBA{A: 255})
+			}
+		}
+	}
+
+	var encoded bytes.Buffer
+	if err := jpeg.Encode(&encoded, source, &jpeg.Options{Quality: 100}); err != nil {
+		t.Fatal(err)
+	}
+
+	data, ok := rotateJPEG180(encoded.Bytes())
+	if !ok {
+		t.Fatal("expected valid JPEG to rotate")
+	}
+
+	got, err := jpeg.Decode(bytes.NewReader(data))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	topLeftR, _, topLeftB, _ := got.At(5, 5).RGBA()
+	bottomRightR, _, bottomRightB, _ := got.At(35, 35).RGBA()
+	if topLeftB <= topLeftR {
+		t.Fatal("expected bottom-right blue quadrant to rotate into top-left")
+	}
+	if bottomRightR <= bottomRightB {
+		t.Fatal("expected top-left red quadrant to rotate into bottom-right")
 	}
 }
 

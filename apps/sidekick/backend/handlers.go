@@ -1,8 +1,11 @@
 package main
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
+	"image"
+	"image/jpeg"
 	"io"
 	"net/http"
 	"strconv"
@@ -42,6 +45,10 @@ func (s *server) handleFrame(w http.ResponseWriter, r *http.Request) {
 	if len(imageBytes) == 0 {
 		writeJSON(w, http.StatusBadRequest, errorResponse{Error: "empty image body"})
 		return
+	}
+	receivedBytes := len(imageBytes)
+	if rotated, ok := rotateJPEG180(imageBytes); ok {
+		imageBytes = rotated
 	}
 
 	sessionID := normalizeSessionID(r.URL.Query().Get("session"))
@@ -84,10 +91,32 @@ func (s *server) handleFrame(w http.ResponseWriter, r *http.Request) {
 		Provider:      provider,
 		Message:       message,
 		ShouldRespond: shouldRespond,
-		ReceivedBytes: len(imageBytes),
+		ReceivedBytes: receivedBytes,
 		LatencyMS:     time.Since(start).Milliseconds(),
 		Transcript:    transcript,
 	})
+}
+
+func rotateJPEG180(data []byte) ([]byte, bool) {
+	source, err := jpeg.Decode(bytes.NewReader(data))
+	if err != nil {
+		return data, false
+	}
+
+	bounds := source.Bounds()
+	rotated := image.NewRGBA(image.Rect(0, 0, bounds.Dx(), bounds.Dy()))
+	for y := 0; y < bounds.Dy(); y++ {
+		for x := 0; x < bounds.Dx(); x++ {
+			rotated.Set(bounds.Dx()-1-x, bounds.Dy()-1-y, source.At(bounds.Min.X+x, bounds.Min.Y+y))
+		}
+	}
+
+	var output bytes.Buffer
+	if err := jpeg.Encode(&output, rotated, &jpeg.Options{Quality: 95}); err != nil {
+		return data, false
+	}
+
+	return output.Bytes(), true
 }
 
 func (s *server) handleAudio(w http.ResponseWriter, r *http.Request) {

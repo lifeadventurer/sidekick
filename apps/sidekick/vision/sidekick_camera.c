@@ -1,3 +1,10 @@
+/**
+ * @file sidekick_camera.c
+ * @brief SideKick camera preview and JPEG capture.
+ *
+ * @copyright Copyright (c) 2026 SideKick Contributors. All Rights Reserved.
+ *
+ */
 #include "sidekick_camera.h"
 
 #include "sidekick_config.h"
@@ -18,11 +25,12 @@ static OPERATE_RET sidekick_camera_preview_start_in_rect(uint16_t x, uint16_t y,
 #define SIDEKICK_CAMERA_FREE   tal_free
 #endif
 
-#define SIDEKICK_DISPLAY_FRAME_BUFF_NUM 2
-#define SIDEKICK_GLYPH_WIDTH            5
-#define SIDEKICK_GLYPH_SPACING          1
-#define SIDEKICK_GLYPH_HEIGHT           7
-#define SIDEKICK_END_LETTERS            3
+#define SIDEKICK_DISPLAY_FRAME_BUFF_NUM  2
+#define SIDEKICK_GLYPH_WIDTH             5
+#define SIDEKICK_GLYPH_SPACING           1
+#define SIDEKICK_GLYPH_HEIGHT            7
+#define SIDEKICK_END_LETTERS             3
+#define SIDEKICK_CAMERA_PREVIEW_ROTATION TUYA_DISPLAY_ROTATION_180
 
 #if SIDEKICK_ENABLE_CAPTURE_SAVE
 #include <stdio.h>
@@ -318,7 +326,7 @@ static OPERATE_RET sidekick_camera_frame_cb(TDL_CAMERA_HANDLE_T hdl, TDL_CAMERA_
     sidekick_camera_apply_full_frame(fb);
 
     TUYA_CALL_ERR_LOG(tdl_disp_convert_yuv422_to_fb(frame->data, frame->width, frame->height, fb,
-                                                    s_display_info.is_swap, TUYA_DISPLAY_ROTATION_0));
+                                                    s_display_info.is_swap, SIDEKICK_CAMERA_PREVIEW_ROTATION));
     if (s_overlay_active) {
         sidekick_camera_draw_session_overlay(fb);
     }
