@@ -13,7 +13,7 @@ static THREAD_HANDLE s_sidekick_thread = NULL;
 
 static void sidekick_user_main(void)
 {
-    OPERATE_RET rt = OPRT_OK;
+    OPERATE_RET rt               = OPRT_OK;
     uint32_t    tutor_elapsed_ms = 0;
 
     (void)tal_log_init(TAL_LOG_LEVEL_DEBUG, 2048, (TAL_LOG_OUTPUT_CB)tkl_log_output);
