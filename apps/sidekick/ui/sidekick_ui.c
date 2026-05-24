@@ -208,23 +208,17 @@ static void sidekick_ui_draw_home_icon(uint16_t x, uint16_t y, uint16_t size, ui
 {
     OPERATE_RET rt   = OPRT_OK;
     uint16_t    unit = size / 8;
-    uint16_t    base_x;
-    uint16_t    base_y;
 
     if (unit == 0) {
         unit = 1;
     }
 
-    base_x = x + unit * 2;
-    base_y = y + unit * 4;
+    TUYA_CALL_ERR_LOG(sidekick_ui_fill_rect(x + unit * 2, y + unit * 4, unit * 4, unit * 3, color));
+    TUYA_CALL_ERR_LOG(sidekick_ui_fill_rect(x + unit * 3, y + unit * 5, unit * 2, unit * 2, SIDEKICK_COLOR_CARD));
 
-    TUYA_CALL_ERR_LOG(sidekick_ui_fill_rect(base_x, base_y, unit * 4, unit * 3, color));
-    TUYA_CALL_ERR_LOG(sidekick_ui_fill_rect(base_x + unit, base_y + unit, unit * 2, unit * 2, SIDEKICK_COLOR_BG));
-
-    for (uint8_t step = 0; step < 4; step++) {
-        TUYA_CALL_ERR_LOG(
-            sidekick_ui_fill_rect(x + unit * (3 - step), y + unit * (step + 1), unit * (step * 2 + 2), unit, color));
-    }
+    TUYA_CALL_ERR_LOG(sidekick_ui_fill_rect(x + unit * 3, y + unit, unit * 2, unit, color));
+    TUYA_CALL_ERR_LOG(sidekick_ui_fill_rect(x + unit * 2, y + unit * 2, unit * 4, unit, color));
+    TUYA_CALL_ERR_LOG(sidekick_ui_fill_rect(x + unit, y + unit * 3, unit * 6, unit, color));
 }
 
 static void sidekick_ui_draw_speaker_icon(uint16_t x, uint16_t y, uint16_t size, uint32_t color)
@@ -245,17 +239,22 @@ static void sidekick_ui_draw_speaker_icon(uint16_t x, uint16_t y, uint16_t size,
 
 static void sidekick_ui_draw_camera_icon(uint16_t x, uint16_t y, uint16_t size, uint32_t color)
 {
-    OPERATE_RET rt   = OPRT_OK;
-    uint16_t    unit = size / 10;
+    OPERATE_RET rt     = OPRT_OK;
+    uint16_t    unit   = size / 10;
+    uint32_t    cutout = SIDEKICK_COLOR_ACCENT;
 
     if (unit == 0) {
         unit = 1;
     }
 
     TUYA_CALL_ERR_LOG(sidekick_ui_fill_rect(x + unit, y + unit * 3, unit * 8, unit * 5, color));
-    TUYA_CALL_ERR_LOG(sidekick_ui_fill_rect(x + unit * 3, y + unit * 2, unit * 4, unit, color));
-    TUYA_CALL_ERR_LOG(sidekick_ui_fill_rect(x + unit * 4, y + unit * 4, unit * 2, unit * 2, SIDEKICK_COLOR_BG));
-    TUYA_CALL_ERR_LOG(sidekick_ui_fill_rect(x + unit * 5, y + unit * 5, unit, unit, color));
+    TUYA_CALL_ERR_LOG(sidekick_ui_fill_rect(x + unit * 3, y + unit * 2, unit * 2, unit, color));
+    TUYA_CALL_ERR_LOG(sidekick_ui_fill_rect(x + unit * 6, y + unit * 4, unit, unit, cutout));
+
+    TUYA_CALL_ERR_LOG(sidekick_ui_fill_rect(x + unit * 3, y + unit * 4, unit * 4, unit, cutout));
+    TUYA_CALL_ERR_LOG(sidekick_ui_fill_rect(x + unit * 2, y + unit * 5, unit * 6, unit * 2, cutout));
+    TUYA_CALL_ERR_LOG(sidekick_ui_fill_rect(x + unit * 3, y + unit * 7, unit * 4, unit, cutout));
+    TUYA_CALL_ERR_LOG(sidekick_ui_fill_rect(x + unit * 4, y + unit * 5, unit * 2, unit * 2, color));
 }
 
 static OPERATE_RET sidekick_ui_draw_home_screen(void)
