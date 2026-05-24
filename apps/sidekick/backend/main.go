@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
@@ -33,6 +34,7 @@ const (
 	defaultTTSProvider     = "none"
 	defaultMaxTTSChars     = 600
 	defaultCaptureDir      = "captures"
+	defaultAudioCacheDir   = "audio_cache"
 
 	defaultOpenAITTSURL    = "https://api.openai.com/v1/audio/speech"
 	defaultOpenAITTSModel  = "gpt-4o-mini-tts"
@@ -65,6 +67,7 @@ type config struct {
 type ttsConfig struct {
 	Provider               string
 	MaxChars               int
+	AudioCacheDir          string
 	OpenAIAPIKey           string
 	OpenAIURL              string
 	OpenAIModel            string
@@ -134,6 +137,7 @@ func main() {
 	flag.BoolVar(&cfg.Verbose, "verbose", cfg.Verbose, "print verbose Ollama and response logs")
 	flag.Parse()
 	srv := newServer(cfg)
+	srv.loadTTSFromDisk()
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /health", srv.handleHealth)
@@ -167,6 +171,7 @@ func loadConfig() config {
 		TTS: ttsConfig{
 			Provider:               strings.ToLower(getenv("SIDEKICK_TTS_PROVIDER", defaultTTSProvider)),
 			MaxChars:               int(getenvInt64("SIDEKICK_TTS_MAX_CHARS", defaultMaxTTSChars)),
+			AudioCacheDir:          getenv("SIDEKICK_AUDIO_CACHE_DIR", defaultAudioCacheDir),
 			OpenAIAPIKey:           os.Getenv("OPENAI_API_KEY"),
 			OpenAIURL:              getenv("OPENAI_TTS_URL", defaultOpenAITTSURL),
 			OpenAIModel:            getenv("OPENAI_TTS_MODEL", defaultOpenAITTSModel),
@@ -412,7 +417,7 @@ func (s *server) handleTTS(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	s.cacheTTS(key, audio, contentType, format)
+	s.cacheTTS(key, audio, contentType, format, text)
 
 	w.Header().Set("Content-Type", contentType)
 	w.Header().Set("Content-Length", strconv.Itoa(len(audio)))
@@ -469,10 +474,8 @@ func normalizeTextKey(text string) string {
 	return strings.ToLower(strings.Join(strings.Fields(text), " "))
 }
 
-func (s *server) cacheTTS(key string, audio []byte, contentType, format string) {
+func (s *server) cacheTTS(key string, audio []byte, contentType, format string, text string) {
 	s.mu.Lock()
-	defer s.mu.Unlock()
-
 	now := time.Now()
 	for k, v := range s.ttsCache {
 		if now.Sub(v.CreatedAt) > 10*time.Minute {
@@ -484,12 +487,16 @@ func (s *server) cacheTTS(key string, audio []byte, contentType, format string) 
 		s.ttsCache = make(map[string]ttsCacheEntry)
 	}
 
-	s.ttsCache[key] = ttsCacheEntry{
+	entry := ttsCacheEntry{
 		Audio:       audio,
 		ContentType: contentType,
 		Format:      format,
 		CreatedAt:   now,
 	}
+	s.ttsCache[key] = entry
+	s.mu.Unlock()
+
+	s.saveTTSToDisk(key, entry, text)
 }
 
 func (s *server) getCachedTTS(key string) (ttsCacheEntry, bool) {
@@ -498,6 +505,146 @@ func (s *server) getCachedTTS(key string) (ttsCacheEntry, bool) {
 
 	entry, found := s.ttsCache[key]
 	return entry, found
+}
+
+type ttsMetadata struct {
+	Key         string    `json:"key"`
+	Text        string    `json:"text"`
+	Format      string    `json:"format"`
+	ContentType string    `json:"content_type"`
+	CreatedAt   time.Time `json:"created_at"`
+	AudioFile   string    `json:"audio_file"`
+}
+
+func extensionForFormat(format string) string {
+	format = strings.ToLower(format)
+	switch {
+	case strings.Contains(format, "wav"):
+		return ".wav"
+	case strings.Contains(format, "pcm"):
+		return ".pcm"
+	case strings.Contains(format, "opus"):
+		return ".opus"
+	case strings.Contains(format, "aac"):
+		return ".aac"
+	case strings.Contains(format, "flac"):
+		return ".flac"
+	case strings.Contains(format, "mp3"):
+		return ".mp3"
+	default:
+		return ".bin"
+	}
+}
+
+func (s *server) saveTTSToDisk(key string, entry ttsCacheEntry, text string) {
+	if s.cfg.TTS.AudioCacheDir == "" || len(entry.Audio) == 0 {
+		return
+	}
+
+	if err := os.MkdirAll(s.cfg.TTS.AudioCacheDir, 0o755); err != nil {
+		logError("audio cache save mkdir failed", "error", err)
+		return
+	}
+
+	hash := fmt.Sprintf("%x", sha256.Sum256([]byte(key)))
+
+	// 1. Save raw text file
+	txtPath := filepath.Join(s.cfg.TTS.AudioCacheDir, hash+".txt")
+	if err := os.WriteFile(txtPath, []byte(text), 0o644); err != nil {
+		logError("failed to write TTS text file", "path", txtPath, "error", err)
+	}
+
+	// 2. Save raw audio file
+	ext := extensionForFormat(entry.Format)
+	audioFilename := hash + ext
+	audioPath := filepath.Join(s.cfg.TTS.AudioCacheDir, audioFilename)
+	if err := os.WriteFile(audioPath, entry.Audio, 0o644); err != nil {
+		logError("failed to write TTS audio file", "path", audioPath, "error", err)
+	}
+
+	// 3. Save JSON metadata
+	meta := ttsMetadata{
+		Key:         key,
+		Text:        text,
+		Format:      entry.Format,
+		ContentType: entry.ContentType,
+		CreatedAt:   entry.CreatedAt,
+		AudioFile:   audioFilename,
+	}
+	metaBytes, err := json.MarshalIndent(meta, "", "  ")
+	if err != nil {
+		logError("failed to marshal TTS metadata", "error", err)
+		return
+	}
+	metaPath := filepath.Join(s.cfg.TTS.AudioCacheDir, hash+".json")
+	if err := os.WriteFile(metaPath, metaBytes, 0o644); err != nil {
+		logError("failed to write TTS metadata file", "path", metaPath, "error", err)
+	}
+}
+
+func (s *server) loadTTSFromDisk() {
+	if s.cfg.TTS.AudioCacheDir == "" {
+		return
+	}
+
+	// Check if directory exists
+	if _, err := os.Stat(s.cfg.TTS.AudioCacheDir); os.IsNotExist(err) {
+		return
+	}
+
+	files, err := os.ReadDir(s.cfg.TTS.AudioCacheDir)
+	if err != nil {
+		logError("failed to read audio cache directory", "error", err)
+		return
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	loadedCount := 0
+	for _, file := range files {
+		if file.IsDir() || !strings.HasSuffix(file.Name(), ".json") {
+			continue
+		}
+
+		// Read and parse json metadata
+		metaPath := filepath.Join(s.cfg.TTS.AudioCacheDir, file.Name())
+		metaBytes, err := os.ReadFile(metaPath)
+		if err != nil {
+			logWarn("failed to read metadata file", "path", metaPath, "error", err)
+			continue
+		}
+
+		var meta ttsMetadata
+		if err := json.Unmarshal(metaBytes, &meta); err != nil {
+			logWarn("failed to parse metadata file", "path", metaPath, "error", err)
+			continue
+		}
+
+		if meta.Key == "" || meta.AudioFile == "" {
+			continue
+		}
+
+		// Read the associated audio file
+		audioPath := filepath.Join(s.cfg.TTS.AudioCacheDir, meta.AudioFile)
+		audioBytes, err := os.ReadFile(audioPath)
+		if err != nil {
+			logWarn("failed to read audio file for metadata", "path", audioPath, "error", err)
+			continue
+		}
+
+		s.ttsCache[meta.Key] = ttsCacheEntry{
+			Audio:       audioBytes,
+			ContentType: meta.ContentType,
+			Format:      meta.Format,
+			CreatedAt:   meta.CreatedAt,
+		}
+		loadedCount++
+	}
+
+	if loadedCount > 0 {
+		logInfo("loaded TTS cache from disk", "count", loadedCount, "dir", s.cfg.TTS.AudioCacheDir)
+	}
 }
 
 func (s *server) maybeGenerateTTS(_ context.Context, shouldRespond bool, message string) {
@@ -526,7 +673,7 @@ func (s *server) maybeGenerateTTS(_ context.Context, shouldRespond bool, message
 	}
 
 	key := normalizeTextKey(message)
-	s.cacheTTS(key, audio, contentType, outputFormat)
+	s.cacheTTS(key, audio, contentType, outputFormat, message)
 
 	if s.cfg.Verbose {
 		logInfo("pre-generated and cached TTS", "provider", provider, "latency", time.Since(start).Round(time.Millisecond), "audio_bytes", len(audio), "key", key)

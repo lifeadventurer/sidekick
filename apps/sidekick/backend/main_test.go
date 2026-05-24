@@ -3,7 +3,9 @@ package main
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -689,3 +691,94 @@ func TestTTSCaching(t *testing.T) {
 		t.Fatalf("expected exactly 1 call (pre-generation), got %d calls", callCount)
 	}
 }
+
+func TestTTSDiskCaching(t *testing.T) {
+	tempDir := t.TempDir()
+	srv := testServer()
+	srv.cfg.TTS.AudioCacheDir = tempDir
+	srv.cfg.TTS.Provider = "openai"
+	srv.cfg.TTS.OpenAIURL = "https://openai.test/v1/audio/speech"
+
+	srv.client = &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Header:     http.Header{"Content-Type": []string{"audio/L16"}},
+			Body:       io.NopCloser(bytes.NewReader([]byte("audio-on-disk-data"))),
+		}, nil
+	})}
+
+	message := "Persist to disk"
+	srv.maybeGenerateTTS(context.Background(), true, message)
+
+	// Verify it's in the cache
+	key := normalizeTextKey(message)
+	entry, found := srv.getCachedTTS(key)
+	if !found {
+		t.Fatal("expected message to be cached in memory")
+	}
+	if string(entry.Audio) != "audio-on-disk-data" {
+		t.Fatalf("expected audio-on-disk-data in memory cache, got %q", string(entry.Audio))
+	}
+
+	// Verify that the files exist on disk
+	hash := fmt.Sprintf("%x", sha256.Sum256([]byte(key)))
+	txtPath := filepath.Join(tempDir, hash+".txt")
+	jsonPath := filepath.Join(tempDir, hash+".json")
+	audioPath := filepath.Join(tempDir, hash+".pcm") // "pcm" format matches OpenAI response format or fallback extension mapping
+
+	if _, err := os.Stat(txtPath); err != nil {
+		t.Fatalf("expected raw text file to exist at %s, got err: %v", txtPath, err)
+	}
+	if _, err := os.Stat(jsonPath); err != nil {
+		t.Fatalf("expected JSON metadata file to exist at %s, got err: %v", jsonPath, err)
+	}
+	if _, err := os.Stat(audioPath); err != nil {
+		t.Fatalf("expected audio file to exist at %s, got err: %v", audioPath, err)
+	}
+
+	// Verify txt file content matches original message
+	txtBytes, err := os.ReadFile(txtPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(txtBytes) != message {
+		t.Fatalf("expected txt content to be %q, got %q", message, string(txtBytes))
+	}
+
+	// Verify JSON metadata content
+	jsonBytes, err := os.ReadFile(jsonPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var meta ttsMetadata
+	if err := json.Unmarshal(jsonBytes, &meta); err != nil {
+		t.Fatalf("failed to parse JSON metadata: %v", err)
+	}
+	if meta.Key != key {
+		t.Fatalf("expected metadata key %q, got %q", key, meta.Key)
+	}
+	if meta.Text != message {
+		t.Fatalf("expected metadata text %q, got %q", message, meta.Text)
+	}
+	if meta.AudioFile != hash+".pcm" {
+		t.Fatalf("expected metadata audio_file %q, got %q", hash+".pcm", meta.AudioFile)
+	}
+
+	// Now clear the server cache and reload from disk to test loadTTSFromDisk
+	srv.ttsCache = make(map[string]ttsCacheEntry)
+	if _, found := srv.getCachedTTS(key); found {
+		t.Fatal("expected memory cache to be empty")
+	}
+
+	srv.loadTTSFromDisk()
+
+	// Verify that the entry was successfully reloaded into memory cache
+	reloadedEntry, found := srv.getCachedTTS(key)
+	if !found {
+		t.Fatal("expected message to be loaded from disk cache into memory")
+	}
+	if string(reloadedEntry.Audio) != "audio-on-disk-data" {
+		t.Fatalf("expected reloaded audio to be %q, got %q", "audio-on-disk-data", string(reloadedEntry.Audio))
+	}
+}
+
