@@ -3,6 +3,8 @@
 Sidekick is the hackathon app for a camera and voice enabled AI tutor on the
 Tuya T5AI board.
 
+Repository overview: [../../README.md](../../README.md).
+
 This app is the product scaffold. Keep hardware bring-up experiments in
 `examples/` and use this app for the integrated tutor experience.
 
