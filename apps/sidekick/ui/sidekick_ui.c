@@ -18,6 +18,7 @@
 #define SIDEKICK_WORDMARK_LETTERS 8
 #define SIDEKICK_KICK_LETTERS     4
 #define SIDEKICK_TEST_LETTERS     4
+#define SIDEKICK_END_LETTERS      3
 #define SIDEKICK_GLYPH_WIDTH      5
 #define SIDEKICK_GLYPH_SPACING    1
 #define SIDEKICK_GLYPH_HEIGHT     7
@@ -451,6 +452,54 @@ static void sidekick_ui_kick_layout(uint16_t *home_x, uint16_t *home_y, uint16_t
     *mode_y   = *start_y + *start_h + margin + *mode_gap;
 }
 
+static void sidekick_ui_kick_active_layout(uint16_t *end_x, uint16_t *end_y, uint16_t *end_w, uint16_t *end_h,
+                                           uint16_t *preview_x, uint16_t *preview_y, uint16_t *preview_w,
+                                           uint16_t *preview_h)
+{
+    uint16_t width     = s_canvas_width;
+    uint16_t height    = s_canvas_height;
+    uint16_t margin    = width / 20;
+    uint16_t header_h  = height / 7;
+    uint16_t min_hit_h = height / 9;
+    uint16_t min_hit_w = width / 5;
+    uint16_t text_unit = sidekick_ui_fit_text_unit(SIDEKICK_END_LETTERS, min_hit_w, header_h, header_h / 10);
+    uint16_t text_w    = sidekick_ui_text_width(SIDEKICK_END_LETTERS, text_unit);
+    uint16_t target_w  = text_w + margin;
+
+    if (header_h < min_hit_h) {
+        header_h = min_hit_h;
+    }
+
+    if (target_w < min_hit_w) {
+        target_w = min_hit_w;
+    }
+
+    *end_w     = target_w;
+    *end_h     = header_h;
+    *end_x     = width - margin - *end_w;
+    *end_y     = 0;
+    *preview_x = 0;
+    *preview_y = header_h;
+    *preview_w = width;
+    *preview_h = height - header_h;
+}
+
+static OPERATE_RET sidekick_ui_start_session_preview(void)
+{
+    uint16_t end_x;
+    uint16_t end_y;
+    uint16_t end_w;
+    uint16_t end_h;
+    uint16_t preview_x;
+    uint16_t preview_y;
+    uint16_t preview_w;
+    uint16_t preview_h;
+
+    sidekick_ui_kick_active_layout(&end_x, &end_y, &end_w, &end_h, &preview_x, &preview_y, &preview_w, &preview_h);
+    return sidekick_camera_preview_start_with_header(s_canvas_width, s_canvas_height, s_rotate_canvas, s_flip_canvas,
+                                                     preview_y, end_x, end_y, end_w, end_h);
+}
+
 static OPERATE_RET sidekick_ui_draw_home_screen(void)
 {
     OPERATE_RET rt       = OPRT_OK;
@@ -458,7 +507,7 @@ static OPERATE_RET sidekick_ui_draw_home_screen(void)
     uint16_t    height   = s_canvas_height;
     uint16_t    unit     = height / 28;
     uint16_t    max_unit = (width > 16) ? ((width - 16) / (SIDEKICK_WORDMARK_LETTERS * SIDEKICK_GLYPH_WIDTH +
-                                                        (SIDEKICK_WORDMARK_LETTERS - 1) * SIDEKICK_GLYPH_SPACING))
+                                                           (SIDEKICK_WORDMARK_LETTERS - 1) * SIDEKICK_GLYPH_SPACING))
                                         : 1;
     uint16_t    word_w;
     uint16_t    word_x;
@@ -518,6 +567,30 @@ static OPERATE_RET sidekick_ui_draw_kick_modes(uint16_t mode_x, uint16_t mode_y,
     return rt;
 }
 
+static OPERATE_RET sidekick_ui_draw_kick_active_screen(void)
+{
+    OPERATE_RET rt = OPRT_OK;
+    uint16_t    end_x;
+    uint16_t    end_y;
+    uint16_t    end_w;
+    uint16_t    end_h;
+    uint16_t    preview_x;
+    uint16_t    preview_y;
+    uint16_t    preview_w;
+    uint16_t    preview_h;
+    uint16_t    text_unit;
+
+    sidekick_ui_kick_active_layout(&end_x, &end_y, &end_w, &end_h, &preview_x, &preview_y, &preview_w, &preview_h);
+    text_unit = sidekick_ui_fit_text_unit(SIDEKICK_END_LETTERS, end_w, end_h, end_h / 8);
+
+    sidekick_ui_clear_screen();
+    TUYA_CALL_ERR_RETURN(sidekick_ui_fill_rect(preview_x, preview_y, preview_w, preview_h, SIDEKICK_COLOR_CARD));
+    sidekick_ui_draw_centered_text("END", SIDEKICK_END_LETTERS, end_x, end_y, end_w, end_h, text_unit,
+                                   SIDEKICK_COLOR_SELECTED);
+
+    return sidekick_ui_present();
+}
+
 static OPERATE_RET sidekick_ui_draw_kick_screen(void)
 {
     OPERATE_RET rt = OPRT_OK;
@@ -533,6 +606,11 @@ static OPERATE_RET sidekick_ui_draw_kick_screen(void)
     uint16_t    mode_w;
     uint16_t    mode_h;
     uint16_t    mode_gap;
+
+    if (sidekick_session_is_active()) {
+        return sidekick_ui_draw_kick_active_screen();
+    }
+
     sidekick_ui_kick_layout(&home_x, &home_y, &home_size, &start_x, &start_y, &start_w, &start_h, &mode_x, &mode_y,
                             &mode_w, &mode_h, &mode_gap);
 
@@ -792,6 +870,28 @@ void sidekick_ui_poll(void)
         uint16_t mode_gap;
         uint16_t row_y;
 
+        if (sidekick_session_is_active()) {
+            uint16_t end_x;
+            uint16_t end_y;
+            uint16_t end_w;
+            uint16_t end_h;
+            uint16_t preview_x;
+            uint16_t preview_y;
+            uint16_t preview_w;
+            uint16_t preview_h;
+
+            sidekick_ui_kick_active_layout(&end_x, &end_y, &end_w, &end_h, &preview_x, &preview_y, &preview_w,
+                                           &preview_h);
+            if (sidekick_ui_point_in_rect(canvas_x, canvas_y, end_x, end_y, end_w, end_h)) {
+                SIDEKICK_LOGI("ui", "session end");
+                TUYA_CALL_ERR_LOG(sidekick_camera_preview_stop());
+                sidekick_session_end();
+                TUYA_CALL_ERR_LOG(sidekick_ui_draw_screen());
+                return;
+            }
+            return;
+        }
+
         sidekick_ui_kick_layout(&home_x, &home_y, &home_size, &start_x, &start_y, &start_w, &start_h, &mode_x, &mode_y,
                                 &mode_w, &mode_h, &mode_gap);
 
@@ -804,6 +904,9 @@ void sidekick_ui_poll(void)
 
         if (sidekick_ui_point_in_rect(canvas_x, canvas_y, start_x, start_y, start_w, start_h)) {
             SIDEKICK_LOGI("ui", "session start");
+            sidekick_session_start();
+            TUYA_CALL_ERR_LOG(sidekick_ui_draw_screen());
+            TUYA_CALL_ERR_LOG(sidekick_ui_start_session_preview());
             return;
         }
 

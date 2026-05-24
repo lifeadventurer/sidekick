@@ -20,8 +20,11 @@ typedef enum {
 OPERATE_RET              sidekick_session_init(void);
 void                     sidekick_session_tick(void);
 SIDEKICK_SESSION_STATE_E sidekick_session_state(void);
+bool                     sidekick_session_is_active(void);
 SIDEKICK_TUTOR_MODE_E    sidekick_session_mode(void);
 const char              *sidekick_session_mode_name(SIDEKICK_TUTOR_MODE_E mode);
+void                     sidekick_session_start(void);
+void                     sidekick_session_end(void);
 void                     sidekick_session_set_mode(SIDEKICK_TUTOR_MODE_E mode);
 void                     sidekick_session_next_mode(void);
 

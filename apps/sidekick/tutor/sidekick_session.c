@@ -10,7 +10,7 @@ static uint32_t                 s_tick_count = 0;
 
 OPERATE_RET sidekick_session_init(void)
 {
-    s_state      = SIDEKICK_SESSION_OBSERVING;
+    s_state      = SIDEKICK_SESSION_IDLE;
     s_mode       = SIDEKICK_DEFAULT_TUTOR_MODE;
     s_tick_count = 0;
     SIDEKICK_LOGI("tutor", "session initialized mode=%s", sidekick_session_mode_name(s_mode));
@@ -19,6 +19,10 @@ OPERATE_RET sidekick_session_init(void)
 
 void sidekick_session_tick(void)
 {
+    if (s_state == SIDEKICK_SESSION_IDLE) {
+        return;
+    }
+
     s_tick_count++;
 
     if ((s_tick_count % 5) == 0) {
@@ -30,6 +34,11 @@ void sidekick_session_tick(void)
 SIDEKICK_SESSION_STATE_E sidekick_session_state(void)
 {
     return s_state;
+}
+
+bool sidekick_session_is_active(void)
+{
+    return s_state != SIDEKICK_SESSION_IDLE;
 }
 
 SIDEKICK_TUTOR_MODE_E sidekick_session_mode(void)
@@ -49,6 +58,27 @@ const char *sidekick_session_mode_name(SIDEKICK_TUTOR_MODE_E mode)
     default:
         return "unknown";
     }
+}
+
+void sidekick_session_start(void)
+{
+    if (sidekick_session_is_active()) {
+        return;
+    }
+
+    s_state      = SIDEKICK_SESSION_OBSERVING;
+    s_tick_count = 0;
+    SIDEKICK_LOGI("tutor", "session started mode=%s", sidekick_session_mode_name(s_mode));
+}
+
+void sidekick_session_end(void)
+{
+    if (!sidekick_session_is_active()) {
+        return;
+    }
+
+    s_state = SIDEKICK_SESSION_IDLE;
+    SIDEKICK_LOGI("tutor", "session ended");
 }
 
 void sidekick_session_set_mode(SIDEKICK_TUTOR_MODE_E mode)
