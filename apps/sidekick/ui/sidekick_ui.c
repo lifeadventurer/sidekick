@@ -107,7 +107,7 @@ static void sidekick_ui_draw_block_letter(char letter, uint16_t x, uint16_t y, u
 {
     OPERATE_RET    rt     = OPRT_OK;
     const uint8_t *glyph  = sidekick_ui_glyph(letter);
-    uint16_t       stroke = (unit > 2) ? (unit - 1) : unit;
+    uint16_t       stroke = unit;
 
     if (glyph == NULL) {
         return;
