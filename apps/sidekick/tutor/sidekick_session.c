@@ -12,16 +12,19 @@
 #include "sidekick_config.h"
 #include "sidekick_log.h"
 
-static SIDEKICK_SESSION_STATE_E s_state      = SIDEKICK_SESSION_IDLE;
-static SIDEKICK_TUTOR_MODE_E    s_mode       = SIDEKICK_DEFAULT_TUTOR_MODE;
-static uint32_t                 s_tick_count = 0;
+static SIDEKICK_SESSION_STATE_E s_state              = SIDEKICK_SESSION_IDLE;
+static SIDEKICK_TUTOR_MODE_E    s_mode               = SIDEKICK_DEFAULT_TUTOR_MODE;
+static uint32_t                 s_tick_count         = 0;
+static uint32_t                 s_frame_interval_sec = SIDEKICK_FRAME_UPLOAD_INTERVAL_SEC;
 
 OPERATE_RET sidekick_session_init(void)
 {
-    s_state      = SIDEKICK_SESSION_IDLE;
-    s_mode       = SIDEKICK_DEFAULT_TUTOR_MODE;
-    s_tick_count = 0;
-    SIDEKICK_LOGI("tutor", "session initialized mode=%s", sidekick_session_mode_name(s_mode));
+    s_state              = SIDEKICK_SESSION_IDLE;
+    s_mode               = SIDEKICK_DEFAULT_TUTOR_MODE;
+    s_tick_count         = 0;
+    s_frame_interval_sec = SIDEKICK_FRAME_UPLOAD_INTERVAL_SEC;
+    SIDEKICK_LOGI("tutor", "session initialized mode=%s interval=%us", sidekick_session_mode_name(s_mode),
+                  (unsigned int)s_frame_interval_sec);
     return OPRT_OK;
 }
 
@@ -38,7 +41,7 @@ void sidekick_session_tick(void)
                       (unsigned int)sidekick_audio_frame_count());
     }
 
-    if ((s_tick_count % SIDEKICK_FRAME_UPLOAD_INTERVAL_SEC) == 0) {
+    if ((s_tick_count % s_frame_interval_sec) == 0) {
         sidekick_backend_request_frame();
     }
 }
@@ -72,6 +75,32 @@ const char *sidekick_session_mode_name(SIDEKICK_TUTOR_MODE_E mode)
     }
 }
 
+uint32_t sidekick_session_frame_interval_sec(void)
+{
+    return s_frame_interval_sec;
+}
+
+void sidekick_session_set_frame_interval_sec(uint32_t seconds)
+{
+    switch (seconds) {
+    case 10:
+    case 15:
+    case 20:
+    case 30:
+        break;
+    default:
+        SIDEKICK_LOGW("tutor", "ignore invalid frame interval=%u", (unsigned int)seconds);
+        return;
+    }
+
+    if (s_frame_interval_sec == seconds) {
+        return;
+    }
+
+    s_frame_interval_sec = seconds;
+    SIDEKICK_LOGI("tutor", "frame interval changed to %us", (unsigned int)s_frame_interval_sec);
+}
+
 void sidekick_session_start(void)
 {
     if (sidekick_session_is_active()) {
@@ -84,12 +113,13 @@ void sidekick_session_start(void)
     }
 
     s_state = SIDEKICK_SESSION_OBSERVING;
-    if (SIDEKICK_FRAME_UPLOAD_INTERVAL_SEC > 1) {
-        s_tick_count = SIDEKICK_FRAME_UPLOAD_INTERVAL_SEC - 1;
+    if (s_frame_interval_sec > 1) {
+        s_tick_count = s_frame_interval_sec - 1;
     } else {
         s_tick_count = 0;
     }
-    SIDEKICK_LOGI("tutor", "session started mode=%s", sidekick_session_mode_name(s_mode));
+    SIDEKICK_LOGI("tutor", "session started mode=%s interval=%us", sidekick_session_mode_name(s_mode),
+                  (unsigned int)s_frame_interval_sec);
 }
 
 void sidekick_session_end(void)

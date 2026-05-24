@@ -1,3 +1,10 @@
+/**
+ * @file sidekick_session.h
+ * @brief SideKick tutoring session public API.
+ *
+ * @copyright Copyright (c) 2026 SideKick Contributors. All Rights Reserved.
+ *
+ */
 #ifndef SIDEKICK_SESSION_H
 #define SIDEKICK_SESSION_H
 
@@ -23,6 +30,8 @@ SIDEKICK_SESSION_STATE_E sidekick_session_state(void);
 bool                     sidekick_session_is_active(void);
 SIDEKICK_TUTOR_MODE_E    sidekick_session_mode(void);
 const char              *sidekick_session_mode_name(SIDEKICK_TUTOR_MODE_E mode);
+uint32_t                 sidekick_session_frame_interval_sec(void);
+void                     sidekick_session_set_frame_interval_sec(uint32_t seconds);
 void                     sidekick_session_start(void);
 void                     sidekick_session_end(void);
 void                     sidekick_session_set_mode(SIDEKICK_TUTOR_MODE_E mode);
