@@ -12,9 +12,15 @@
 #define SIDEKICK_COLOR_DIM      sidekick_ui_color(0x47, 0x55, 0x67)
 #define SIDEKICK_COLOR_SELECTED sidekick_ui_color(0xB7, 0xE4, 0xC7)
 #define SIDEKICK_WORDMARK_LETTERS 8
+#define SIDEKICK_KICK_LETTERS     4
 #define SIDEKICK_GLYPH_WIDTH      5
 #define SIDEKICK_GLYPH_SPACING    1
 #define SIDEKICK_GLYPH_HEIGHT     7
+
+typedef enum {
+    SIDEKICK_UI_SCREEN_HOME = 0,
+    SIDEKICK_UI_SCREEN_MODE,
+} SIDEKICK_UI_SCREEN_E;
 
 static TDL_DISP_HANDLE_T      s_display_handle = NULL;
 static TDL_DISP_DEV_INFO_T    s_display_info;
@@ -23,6 +29,7 @@ static uint16_t               s_canvas_width   = 0;
 static uint16_t               s_canvas_height  = 0;
 static bool                   s_rotate_canvas  = false;
 static bool                   s_flip_canvas    = true;
+static SIDEKICK_UI_SCREEN_E   s_screen         = SIDEKICK_UI_SCREEN_HOME;
 static SIDEKICK_TUTOR_MODE_E  s_drawn_mode     = SIDEKICK_TUTOR_MODE_HINT;
 
 static uint32_t sidekick_ui_color(uint8_t red, uint8_t green, uint8_t blue)
@@ -133,6 +140,13 @@ static void sidekick_ui_draw_block_text(const char *text, uint16_t x, uint16_t y
     }
 }
 
+static uint16_t sidekick_ui_text_width(uint16_t letter_count, uint16_t unit)
+{
+    uint16_t text_units = letter_count * SIDEKICK_GLYPH_WIDTH + (letter_count - 1) * SIDEKICK_GLYPH_SPACING;
+
+    return text_units * unit;
+}
+
 static uint32_t sidekick_ui_mode_color(SIDEKICK_TUTOR_MODE_E mode)
 {
     return (mode == sidekick_session_mode()) ? SIDEKICK_COLOR_SELECTED : SIDEKICK_COLOR_DIM;
@@ -140,13 +154,81 @@ static uint32_t sidekick_ui_mode_color(SIDEKICK_TUTOR_MODE_E mode)
 
 static OPERATE_RET sidekick_ui_draw_home_screen(void)
 {
-    OPERATE_RET rt         = OPRT_OK;
-    uint16_t    width      = s_canvas_width;
-    uint16_t    height     = s_canvas_height;
-    uint16_t    word_units = SIDEKICK_WORDMARK_LETTERS * SIDEKICK_GLYPH_WIDTH +
-                             (SIDEKICK_WORDMARK_LETTERS - 1) * SIDEKICK_GLYPH_SPACING;
-    uint16_t    unit       = height / 26;
-    uint16_t    max_unit   = (width > 16) ? ((width - 16) / word_units) : 1;
+    OPERATE_RET rt       = OPRT_OK;
+    uint16_t    width    = s_canvas_width;
+    uint16_t    height   = s_canvas_height;
+    uint16_t    unit     = height / 28;
+    uint16_t    max_unit = (width > 16) ? ((width - 16) / (SIDEKICK_WORDMARK_LETTERS * SIDEKICK_GLYPH_WIDTH +
+                                                          (SIDEKICK_WORDMARK_LETTERS - 1) * SIDEKICK_GLYPH_SPACING))
+                                        : 1;
+    uint16_t    word_w;
+    uint16_t    word_x;
+    uint16_t    word_y;
+    uint16_t    kick_unit;
+    uint16_t    kick_w;
+    uint16_t    kick_x;
+    uint16_t    kick_y;
+    uint16_t    button_x = width / 4;
+    uint16_t    button_y = height * 58 / 100;
+    uint16_t    button_w = width / 2;
+    uint16_t    button_h = height / 4;
+    uint16_t    card_x   = width / 12;
+    uint16_t    card_y   = height / 10;
+    uint16_t    card_w   = width - (card_x * 2);
+    uint16_t    card_h   = height - (card_y * 2);
+
+    if ((max_unit > 0) && (unit > max_unit)) {
+        unit = max_unit;
+    }
+
+    if (unit < 3) {
+        unit = 3;
+    }
+
+    word_w = sidekick_ui_text_width(SIDEKICK_WORDMARK_LETTERS, unit);
+    word_x = (width > word_w) ? ((width - word_w) / 2) : unit;
+    word_y = card_y + unit * 2;
+
+    kick_unit = (button_h / (SIDEKICK_GLYPH_HEIGHT + 2));
+    kick_w    = sidekick_ui_text_width(SIDEKICK_KICK_LETTERS, kick_unit);
+    if (kick_w > (button_w - unit * 2)) {
+        kick_unit = (button_w - unit * 2) /
+                    (SIDEKICK_KICK_LETTERS * SIDEKICK_GLYPH_WIDTH +
+                     (SIDEKICK_KICK_LETTERS - 1) * SIDEKICK_GLYPH_SPACING);
+        kick_w = sidekick_ui_text_width(SIDEKICK_KICK_LETTERS, kick_unit);
+    }
+
+    if (kick_unit < 3) {
+        kick_unit = 3;
+        kick_w    = sidekick_ui_text_width(SIDEKICK_KICK_LETTERS, kick_unit);
+    }
+
+    kick_x = button_x + ((button_w > kick_w) ? ((button_w - kick_w) / 2) : unit);
+    kick_y = button_y + ((button_h > kick_unit * SIDEKICK_GLYPH_HEIGHT) ?
+                         ((button_h - kick_unit * SIDEKICK_GLYPH_HEIGHT) / 2) :
+                         unit);
+
+    TUYA_CALL_ERR_RETURN(tdl_disp_draw_fill_full(s_display_fb, SIDEKICK_COLOR_BG, s_display_info.is_swap));
+    TUYA_CALL_ERR_RETURN(sidekick_ui_fill_rect(card_x, card_y, card_w, card_h, SIDEKICK_COLOR_CARD));
+    sidekick_ui_draw_block_text("SIDEKICK", word_x, word_y, unit, SIDEKICK_COLOR_ACCENT);
+
+    TUYA_CALL_ERR_RETURN(sidekick_ui_fill_rect(button_x, button_y, button_w, button_h, SIDEKICK_COLOR_SELECTED));
+    sidekick_ui_draw_block_text("KICK", kick_x, kick_y, kick_unit, SIDEKICK_COLOR_BG);
+
+    TUYA_CALL_ERR_RETURN(tdl_disp_dev_flush(s_display_handle, s_display_fb));
+    s_drawn_mode = sidekick_session_mode();
+    return OPRT_OK;
+}
+
+static OPERATE_RET sidekick_ui_draw_mode_screen(void)
+{
+    OPERATE_RET rt       = OPRT_OK;
+    uint16_t    width    = s_canvas_width;
+    uint16_t    height   = s_canvas_height;
+    uint16_t    unit     = height / 28;
+    uint16_t    max_unit = (width > 16) ? ((width - 16) / (SIDEKICK_WORDMARK_LETTERS * SIDEKICK_GLYPH_WIDTH +
+                                                          (SIDEKICK_WORDMARK_LETTERS - 1) * SIDEKICK_GLYPH_SPACING))
+                                        : 1;
     uint16_t    word_w;
     uint16_t    word_x;
     uint16_t    word_y;
@@ -165,16 +247,14 @@ static OPERATE_RET sidekick_ui_draw_home_screen(void)
         unit = 3;
     }
 
-    word_w = word_units * unit;
+    word_w = sidekick_ui_text_width(SIDEKICK_WORDMARK_LETTERS, unit);
     word_x = (width > word_w) ? ((width - word_w) / 2) : unit;
-    word_y = (height > unit * (SIDEKICK_GLYPH_HEIGHT + 4)) ? ((height - unit * (SIDEKICK_GLYPH_HEIGHT + 4)) / 2)
-                                                           : unit;
-    bar_y  = card_y + card_h - (unit * 3);
+    word_y = card_y + unit * 2;
+    bar_y  = card_y + card_h - (unit * 4);
     bar_w  = (card_w - (unit * 4)) / 3;
 
     TUYA_CALL_ERR_RETURN(tdl_disp_draw_fill_full(s_display_fb, SIDEKICK_COLOR_BG, s_display_info.is_swap));
     TUYA_CALL_ERR_RETURN(sidekick_ui_fill_rect(card_x, card_y, card_w, card_h, SIDEKICK_COLOR_CARD));
-
     sidekick_ui_draw_block_text("SIDEKICK", word_x, word_y, unit, SIDEKICK_COLOR_ACCENT);
 
     TUYA_CALL_ERR_RETURN(
@@ -187,6 +267,15 @@ static OPERATE_RET sidekick_ui_draw_home_screen(void)
     TUYA_CALL_ERR_RETURN(tdl_disp_dev_flush(s_display_handle, s_display_fb));
     s_drawn_mode = sidekick_session_mode();
     return OPRT_OK;
+}
+
+static OPERATE_RET sidekick_ui_draw_screen(void)
+{
+    if (s_screen == SIDEKICK_UI_SCREEN_MODE) {
+        return sidekick_ui_draw_mode_screen();
+    }
+
+    return sidekick_ui_draw_home_screen();
 }
 
 static uint32_t sidekick_ui_frame_len(const TDL_DISP_DEV_INFO_T *info)
@@ -244,7 +333,7 @@ static OPERATE_RET sidekick_ui_display_start(void)
     s_canvas_width        = s_rotate_canvas ? s_display_info.height : s_display_info.width;
     s_canvas_height       = s_rotate_canvas ? s_display_info.width : s_display_info.height;
 
-    TUYA_CALL_ERR_RETURN(sidekick_ui_draw_home_screen());
+    TUYA_CALL_ERR_RETURN(sidekick_ui_draw_screen());
     SIDEKICK_LOGI("ui", "SideKick home screen displayed %ux%u", s_display_info.width, s_display_info.height);
     return OPRT_OK;
 }
@@ -312,14 +401,20 @@ void sidekick_ui_poll(void)
     }
 
     s_touch_down = true;
-    SIDEKICK_LOGI("ui", "touch x=%d y=%d; cycling tutor mode", points[0].x, points[0].y);
-    sidekick_session_next_mode();
+    if (s_screen == SIDEKICK_UI_SCREEN_HOME) {
+        SIDEKICK_LOGI("ui", "touch x=%d y=%d; starting SideKick", points[0].x, points[0].y);
+        s_screen = SIDEKICK_UI_SCREEN_MODE;
+        sidekick_session_set_mode(SIDEKICK_TUTOR_MODE_ACTIVE);
+    } else {
+        SIDEKICK_LOGI("ui", "touch x=%d y=%d; cycling tutor mode", points[0].x, points[0].y);
+        sidekick_session_next_mode();
+    }
 #if defined(ENABLE_DISPLAY) && (ENABLE_DISPLAY == 1)
-    TUYA_CALL_ERR_LOG(sidekick_ui_draw_home_screen());
+    TUYA_CALL_ERR_LOG(sidekick_ui_draw_screen());
 #endif
 #elif defined(ENABLE_DISPLAY) && (ENABLE_DISPLAY == 1)
-    if (s_drawn_mode != sidekick_session_mode()) {
-        TUYA_CALL_ERR_LOG(sidekick_ui_draw_home_screen());
+    if ((s_screen == SIDEKICK_UI_SCREEN_MODE) && (s_drawn_mode != sidekick_session_mode())) {
+        TUYA_CALL_ERR_LOG(sidekick_ui_draw_screen());
     }
 #endif
 }
