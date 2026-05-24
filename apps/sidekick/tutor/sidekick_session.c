@@ -2,7 +2,7 @@
  * @file sidekick_session.c
  * @brief SideKick tutoring session state and capture cadence.
  *
- * @copyright Copyright (c) 2026 Tuya Inc. All Rights Reserved.
+ * @copyright Copyright (c) 2026 SideKick Contributors. All Rights Reserved.
  *
  */
 #include "sidekick_session.h"

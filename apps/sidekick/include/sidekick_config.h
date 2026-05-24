@@ -1,3 +1,10 @@
+/**
+ * @file sidekick_config.h
+ * @brief SideKick application compile-time configuration.
+ *
+ * @copyright Copyright (c) 2026 SideKick Contributors. All Rights Reserved.
+ *
+ */
 #ifndef SIDEKICK_CONFIG_H
 #define SIDEKICK_CONFIG_H
 
@@ -11,7 +18,7 @@
 
 #define SIDEKICK_UI_POLL_MS                50
 #define SIDEKICK_TUTOR_TICK_MS             1000
-#define SIDEKICK_FRAME_UPLOAD_INTERVAL_SEC 5
+#define SIDEKICK_FRAME_UPLOAD_INTERVAL_SEC 10
 
 #define SIDEKICK_DEFAULT_TUTOR_MODE    SIDEKICK_TUTOR_MODE_HINT
 #define SIDEKICK_ENABLE_CAMERA_PREVIEW 0

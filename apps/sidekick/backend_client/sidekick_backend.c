@@ -2,7 +2,7 @@
  * @file sidekick_backend.c
  * @brief SideKick firmware backend upload client.
  *
- * @copyright Copyright (c) 2026 Tuya Inc. All Rights Reserved.
+ * @copyright Copyright (c) 2026 SideKick Contributors. All Rights Reserved.
  *
  */
 #include "sidekick_backend.h"
@@ -43,6 +43,7 @@ typedef enum {
 typedef struct {
     bool                   running;
     bool                   network_inited;
+    bool                   busy;
     SEM_HANDLE             sem;
     MUTEX_HANDLE           mutex;
     THREAD_HANDLE          thread;
@@ -244,6 +245,13 @@ static SIDEKICK_BACKEND_REQ_E sidekick_backend_take_pending(void)
     return req;
 }
 
+static void sidekick_backend_set_busy(bool busy)
+{
+    tal_mutex_lock(s_backend.mutex);
+    s_backend.busy = busy;
+    tal_mutex_unlock(s_backend.mutex);
+}
+
 static void sidekick_backend_worker(void *arg)
 {
     OPERATE_RET rt = OPRT_OK;
@@ -260,21 +268,25 @@ static void sidekick_backend_worker(void *arg)
             continue;
         }
 
+        sidekick_backend_set_busy(true);
         if (req == SIDEKICK_BACKEND_REQ_FRAME) {
             TUYA_CALL_ERR_LOG(sidekick_backend_upload_frame());
         } else if (req == SIDEKICK_BACKEND_REQ_SUMMARY) {
             if (!s_backend.network_inited) {
                 SIDEKICK_LOGW(SIDEKICK_BACKEND_TAG, "network not initialized; skip summary request");
+                sidekick_backend_set_busy(false);
                 continue;
             }
 
             if (!sidekick_backend_network_ready()) {
                 SIDEKICK_LOGW(SIDEKICK_BACKEND_TAG, "network not ready; skip summary request");
+                sidekick_backend_set_busy(false);
                 continue;
             }
 
             TUYA_CALL_ERR_LOG(sidekick_backend_request_summary());
         }
+        sidekick_backend_set_busy(false);
     }
 
     tal_thread_delete(s_backend.thread);
@@ -288,6 +300,11 @@ static void sidekick_backend_schedule(SIDEKICK_BACKEND_REQ_E req)
     }
 
     tal_mutex_lock(s_backend.mutex);
+    if ((req == SIDEKICK_BACKEND_REQ_FRAME) && (s_backend.busy || (s_backend.pending != SIDEKICK_BACKEND_REQ_NONE))) {
+        tal_mutex_unlock(s_backend.mutex);
+        SIDEKICK_LOGI(SIDEKICK_BACKEND_TAG, "drop frame request; backend worker busy");
+        return;
+    }
     s_backend.pending = req;
     tal_mutex_unlock(s_backend.mutex);
     tal_semaphore_post(s_backend.sem);
