@@ -34,7 +34,8 @@ typedef enum {
 
 static TDL_DISP_HANDLE_T      s_display_handle = NULL;
 static TDL_DISP_DEV_INFO_T    s_display_info;
-static TDL_DISP_FRAME_BUFF_T *s_display_fb    = NULL;
+static TDL_DISP_FRAME_BUFF_T *s_display_fb[2] = {NULL, NULL};
+static uint8_t                s_draw_fb_index = 0;
 static uint16_t               s_canvas_width  = 0;
 static uint16_t               s_canvas_height = 0;
 static bool                   s_rotate_canvas = false;
@@ -50,22 +51,76 @@ static uint32_t sidekick_ui_color(uint8_t red, uint8_t green, uint8_t blue)
     return (((uint32_t)red & 0xF8) << 8) | (((uint32_t)green & 0xFC) << 3) | ((uint32_t)blue >> 3);
 }
 
+static TDL_DISP_FRAME_BUFF_T *sidekick_ui_draw_fb(void)
+{
+    return s_display_fb[s_draw_fb_index];
+}
+
+static uint16_t sidekick_ui_rgb565_pixel(uint32_t color)
+{
+    uint16_t pixel = (uint16_t)(color & 0xFFFF);
+
+    if (s_display_info.is_swap) {
+        pixel = (uint16_t)((pixel << 8) | (pixel >> 8));
+    }
+
+    return pixel;
+}
+
+static void sidekick_ui_setup_fb(TDL_DISP_FRAME_BUFF_T *fb)
+{
+    fb->x_start = 0;
+    fb->y_start = 0;
+    fb->fmt     = s_display_info.fmt;
+    fb->width   = s_display_info.width;
+    fb->height  = s_display_info.height;
+}
+
+static void sidekick_ui_clear_screen(void)
+{
+    TDL_DISP_FRAME_BUFF_T *fb     = sidekick_ui_draw_fb();
+    uint32_t               pixels = (uint32_t)fb->width * (uint32_t)fb->height;
+
+    if (fb->fmt == TUYA_PIXEL_FMT_RGB565) {
+        uint16_t  fill = sidekick_ui_rgb565_pixel(SIDEKICK_COLOR_BG);
+        uint16_t *p    = (uint16_t *)fb->frame;
+
+        for (uint32_t i = 0; i < pixels; i++) {
+            p[i] = fill;
+        }
+        return;
+    }
+
+    tdl_disp_draw_fill_full(fb, SIDEKICK_COLOR_BG, s_display_info.is_swap);
+}
+
+static OPERATE_RET sidekick_ui_present(void)
+{
+    OPERATE_RET rt = OPRT_OK;
+
+    TUYA_CALL_ERR_RETURN(tdl_disp_dev_flush(s_display_handle, sidekick_ui_draw_fb()));
+    s_draw_fb_index ^= 1;
+    return rt;
+}
+
 static OPERATE_RET sidekick_ui_fill_rect_raw(uint16_t x, uint16_t y, uint16_t width, uint16_t height, uint32_t color)
 {
-    if ((s_display_fb == NULL) || (width == 0) || (height == 0)) {
+    TDL_DISP_FRAME_BUFF_T *fb = sidekick_ui_draw_fb();
+
+    if ((fb == NULL) || (width == 0) || (height == 0)) {
         return OPRT_OK;
     }
 
-    if ((x >= s_display_fb->width) || (y >= s_display_fb->height)) {
+    if ((x >= fb->width) || (y >= fb->height)) {
         return OPRT_OK;
     }
 
-    if ((x + width) > s_display_fb->width) {
-        width = s_display_fb->width - x;
+    if ((x + width) > fb->width) {
+        width = fb->width - x;
     }
 
-    if ((y + height) > s_display_fb->height) {
-        height = s_display_fb->height - y;
+    if ((y + height) > fb->height) {
+        height = fb->height - y;
     }
 
     TDL_DISP_RECT_T rect = {
@@ -75,7 +130,7 @@ static OPERATE_RET sidekick_ui_fill_rect_raw(uint16_t x, uint16_t y, uint16_t wi
         .y1 = y + height - 1,
     };
 
-    return tdl_disp_draw_fill(s_display_fb, &rect, color, s_display_info.is_swap);
+    return tdl_disp_draw_fill(fb, &rect, color, s_display_info.is_swap);
 }
 
 static OPERATE_RET sidekick_ui_fill_rect(uint16_t x, uint16_t y, uint16_t width, uint16_t height, uint32_t color)
@@ -430,7 +485,7 @@ static OPERATE_RET sidekick_ui_draw_home_screen(void)
     sidekick_ui_home_actions_layout(&kick_x, &test_x, &button_y, &button_w, &button_h);
     button_unit = sidekick_ui_fit_text_unit(SIDEKICK_KICK_LETTERS, button_w, button_h, button_h / 8);
 
-    TUYA_CALL_ERR_RETURN(tdl_disp_draw_fill_full(s_display_fb, SIDEKICK_COLOR_BG, s_display_info.is_swap));
+    sidekick_ui_clear_screen();
     sidekick_ui_draw_block_text("SIDEKICK", word_x, word_y, unit, SIDEKICK_COLOR_ACCENT);
 
     TUYA_CALL_ERR_RETURN(sidekick_ui_fill_rect(kick_x, button_y, button_w, button_h, SIDEKICK_COLOR_SELECTED));
@@ -440,8 +495,27 @@ static OPERATE_RET sidekick_ui_draw_home_screen(void)
     sidekick_ui_draw_centered_text("TEST", SIDEKICK_TEST_LETTERS, test_x, button_y, button_w, button_h, button_unit,
                                    SIDEKICK_COLOR_BG);
 
-    TUYA_CALL_ERR_RETURN(tdl_disp_dev_flush(s_display_handle, s_display_fb));
-    return OPRT_OK;
+    return sidekick_ui_present();
+}
+
+static OPERATE_RET sidekick_ui_draw_kick_modes(uint16_t mode_x, uint16_t mode_y, uint16_t mode_w, uint16_t mode_h,
+                                               uint16_t mode_gap)
+{
+    OPERATE_RET rt = OPRT_OK;
+    uint16_t    row_y;
+    uint32_t    label_fg;
+
+    row_y = mode_y;
+    for (SIDEKICK_TUTOR_MODE_E mode = SIDEKICK_TUTOR_MODE_ACTIVE; mode <= SIDEKICK_TUTOR_MODE_SUMMARY; mode++) {
+        uint32_t fill = sidekick_ui_mode_fill(mode);
+
+        label_fg = (fill == SIDEKICK_COLOR_SELECTED) ? SIDEKICK_COLOR_BG : SIDEKICK_COLOR_ACCENT;
+        TUYA_CALL_ERR_RETURN(sidekick_ui_fill_rect(mode_x, row_y, mode_w, mode_h, fill));
+        sidekick_ui_draw_label_in_rect(sidekick_ui_mode_label(mode), mode_x, row_y, mode_w, mode_h, label_fg);
+        row_y += mode_h + mode_gap;
+    }
+
+    return rt;
 }
 
 static OPERATE_RET sidekick_ui_draw_kick_screen(void)
@@ -459,32 +533,19 @@ static OPERATE_RET sidekick_ui_draw_kick_screen(void)
     uint16_t    mode_w;
     uint16_t    mode_h;
     uint16_t    mode_gap;
-    uint16_t    row_y;
-    uint32_t    label_fg;
-
     sidekick_ui_kick_layout(&home_x, &home_y, &home_size, &start_x, &start_y, &start_w, &start_h, &mode_x, &mode_y,
                             &mode_w, &mode_h, &mode_gap);
 
-    TUYA_CALL_ERR_RETURN(tdl_disp_draw_fill_full(s_display_fb, SIDEKICK_COLOR_BG, s_display_info.is_swap));
+    sidekick_ui_clear_screen();
     TUYA_CALL_ERR_RETURN(sidekick_ui_fill_rect(home_x, home_y, home_size, home_size, SIDEKICK_COLOR_CARD));
     sidekick_ui_draw_home_icon(home_x + home_size / 8, home_y + home_size / 8, home_size * 3 / 4,
                                SIDEKICK_COLOR_ACCENT);
 
     TUYA_CALL_ERR_RETURN(sidekick_ui_fill_rect(start_x, start_y, start_w, start_h, SIDEKICK_COLOR_SELECTED));
     sidekick_ui_draw_label_in_rect("START", start_x, start_y, start_w, start_h, SIDEKICK_COLOR_BG);
+    TUYA_CALL_ERR_RETURN(sidekick_ui_draw_kick_modes(mode_x, mode_y, mode_w, mode_h, mode_gap));
 
-    row_y = mode_y;
-    for (SIDEKICK_TUTOR_MODE_E mode = SIDEKICK_TUTOR_MODE_ACTIVE; mode <= SIDEKICK_TUTOR_MODE_SUMMARY; mode++) {
-        uint32_t fill = sidekick_ui_mode_fill(mode);
-
-        label_fg = (fill == SIDEKICK_COLOR_SELECTED) ? SIDEKICK_COLOR_BG : SIDEKICK_COLOR_ACCENT;
-        TUYA_CALL_ERR_RETURN(sidekick_ui_fill_rect(mode_x, row_y, mode_w, mode_h, fill));
-        sidekick_ui_draw_label_in_rect(sidekick_ui_mode_label(mode), mode_x, row_y, mode_w, mode_h, label_fg);
-        row_y += mode_h + mode_gap;
-    }
-
-    TUYA_CALL_ERR_RETURN(tdl_disp_dev_flush(s_display_handle, s_display_fb));
-    return OPRT_OK;
+    return sidekick_ui_present();
 }
 
 static OPERATE_RET sidekick_ui_draw_tests_screen(void)
@@ -505,7 +566,7 @@ static OPERATE_RET sidekick_ui_draw_tests_screen(void)
                              &card_h);
     icon_size = (card_h < card_w) ? (card_h * 3 / 4) : (card_w * 3 / 4);
 
-    TUYA_CALL_ERR_RETURN(tdl_disp_draw_fill_full(s_display_fb, SIDEKICK_COLOR_BG, s_display_info.is_swap));
+    sidekick_ui_clear_screen();
     TUYA_CALL_ERR_RETURN(sidekick_ui_fill_rect(home_x, home_y, home_size, home_size, SIDEKICK_COLOR_CARD));
     TUYA_CALL_ERR_RETURN(sidekick_ui_fill_rect(speaker_x, speaker_y, card_w, card_h, SIDEKICK_COLOR_SELECTED));
     TUYA_CALL_ERR_RETURN(sidekick_ui_fill_rect(camera_x, camera_y, card_w, card_h, SIDEKICK_COLOR_ACCENT));
@@ -517,8 +578,7 @@ static OPERATE_RET sidekick_ui_draw_tests_screen(void)
     sidekick_ui_draw_camera_icon(camera_x + ((card_w - icon_size) / 2), camera_y + ((card_h - icon_size) / 2),
                                  icon_size, SIDEKICK_COLOR_BG);
 
-    TUYA_CALL_ERR_RETURN(tdl_disp_dev_flush(s_display_handle, s_display_fb));
-    return OPRT_OK;
+    return sidekick_ui_present();
 }
 
 static OPERATE_RET sidekick_ui_draw_screen(void)
@@ -574,20 +634,20 @@ static OPERATE_RET sidekick_ui_display_start(void)
         return OPRT_OK;
     }
 
-    s_display_fb = tdl_disp_create_frame_buff(DISP_FB_TP_PSRAM, frame_len);
-    if (s_display_fb == NULL) {
-        SIDEKICK_LOGW("ui", "display frame buffer allocation failed");
-        return OPRT_OK;
+    for (uint8_t i = 0; i < 2; i++) {
+        s_display_fb[i] = tdl_disp_create_frame_buff(DISP_FB_TP_PSRAM, frame_len);
+        if (s_display_fb[i] == NULL) {
+            SIDEKICK_LOGW("ui", "display frame buffer %u allocation failed", i);
+            return OPRT_OK;
+        }
+
+        sidekick_ui_setup_fb(s_display_fb[i]);
     }
 
-    s_display_fb->x_start = 0;
-    s_display_fb->y_start = 0;
-    s_display_fb->fmt     = s_display_info.fmt;
-    s_display_fb->width   = s_display_info.width;
-    s_display_fb->height  = s_display_info.height;
-    s_rotate_canvas       = s_display_info.height > s_display_info.width;
-    s_canvas_width        = s_rotate_canvas ? s_display_info.height : s_display_info.width;
-    s_canvas_height       = s_rotate_canvas ? s_display_info.width : s_display_info.height;
+    s_draw_fb_index = 0;
+    s_rotate_canvas = s_display_info.height > s_display_info.width;
+    s_canvas_width  = s_rotate_canvas ? s_display_info.height : s_display_info.width;
+    s_canvas_height = s_rotate_canvas ? s_display_info.width : s_display_info.height;
 
     TUYA_CALL_ERR_RETURN(sidekick_ui_draw_screen());
     SIDEKICK_LOGI("ui", "SideKick home screen displayed %ux%u", s_display_info.width, s_display_info.height);
@@ -744,16 +804,17 @@ void sidekick_ui_poll(void)
 
         if (sidekick_ui_point_in_rect(canvas_x, canvas_y, start_x, start_y, start_w, start_h)) {
             SIDEKICK_LOGI("ui", "session start");
-            TUYA_CALL_ERR_LOG(sidekick_ui_draw_screen());
             return;
         }
 
         row_y = mode_y;
         for (SIDEKICK_TUTOR_MODE_E mode = SIDEKICK_TUTOR_MODE_ACTIVE; mode <= SIDEKICK_TUTOR_MODE_SUMMARY; mode++) {
             if (sidekick_ui_point_in_rect(canvas_x, canvas_y, mode_x, row_y, mode_w, mode_h)) {
-                sidekick_session_set_mode(mode);
-                SIDEKICK_LOGI("ui", "mode=%s", sidekick_session_mode_name(mode));
-                TUYA_CALL_ERR_LOG(sidekick_ui_draw_screen());
+                if (mode != sidekick_session_mode()) {
+                    sidekick_session_set_mode(mode);
+                    SIDEKICK_LOGI("ui", "mode=%s", sidekick_session_mode_name(mode));
+                    TUYA_CALL_ERR_LOG(sidekick_ui_draw_kick_screen());
+                }
                 return;
             }
             row_y += mode_h + mode_gap;
@@ -771,7 +832,6 @@ void sidekick_ui_poll(void)
     if (sidekick_ui_point_in_rect(canvas_x, canvas_y, speaker_x, speaker_y, card_w, card_h)) {
         SIDEKICK_LOGI("ui", "speaker test");
         TUYA_CALL_ERR_LOG(sidekick_audio_play_startup_chime());
-        TUYA_CALL_ERR_LOG(sidekick_ui_draw_screen());
         return;
     }
 
