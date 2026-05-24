@@ -17,136 +17,138 @@ apps/sidekick/
   tutor/                   Tutor session state and orchestration
 ```
 
-## Component Graph
+## Component Interaction Graph
+
+```mermaid
+flowchart LR
+    User["Student"] --> UI["Board UI<br/>Home, Kick, Settings, Tests"]
+    UI --> Tutor["Tutor session<br/>Active, Hint, Summary"]
+    Tutor --> Client["Firmware backend client"]
+
+    subgraph Board["T5AI board firmware"]
+        UI
+        Tutor
+        Client
+        Camera["Camera / JPEG capture"]
+        Audio["Audio codec<br/>mic count + PCM playback"]
+    end
+
+    subgraph Config["Build-time config"]
+        Env["apps/sidekick/.env.local"]
+        Gen["gen_sidekick_device_config.py"]
+        Header["sidekick_device_config.h"]
+    end
+
+    subgraph Backend["Laptop backend"]
+        Server["Go server :8787"]
+        Frame["/sidekick/frame"]
+        EndSession["/sidekick/session/end"]
+        TTS["/sidekick/tts"]
+        Cache["TTS cache<br/>memory + audio_cache/"]
+    end
+
+    subgraph Services["AI and speech services"]
+        Ollama["Ollama vision<br/>llama3.2-vision:11b"]
+        OpenAI["OpenAI TTS"]
+        ElevenLabs["ElevenLabs TTS"]
+    end
+
+    Env --> Gen --> Header --> Client
+    Tutor -->|capture interval reached| Camera
+    Camera -->|JPEG bytes| Client
+    Client -->|Wi-Fi HTTP POST| Frame
+    Client -->|session end| EndSession
+    Frame -->|image context| Ollama
+    EndSession -->|retained frames| Ollama
+    Ollama -->|text decision JSON| Server
+    Server -->|should_respond + message| Client
+    Server -->|pre-generate speech when enabled| TTS
+    Client -->|request pcm_16000 for message| TTS
+    TTS -->|configured provider| OpenAI
+    TTS -->|configured provider| ElevenLabs
+    OpenAI --> Cache
+    ElevenLabs --> Cache
+    Cache -->|audio response| Client
+    Client --> Audio
+    Audio --> User
+```
+
+## Sequential Workflow
 
 ```mermaid
 flowchart TD
-    User[Student / User] --> UI[Sidekick UI]
-    User --> AudioHW[Microphone / Speaker]
-    User --> CameraHW[Camera]
-    User --> TouchHW[Touch / LCD]
-
-    subgraph App[Sidekick Firmware App]
-        Main[sidekick_main.c<br/>boot + main loop]
-        Hardware[Hardware Init]
-        UI[UI<br/>mode + interval controls]
-        Tutor[Tutor Session<br/>Active, Hint, Summary]
-        Vision[Camera Pipeline<br/>JPEG capture + optional preview]
-        Audio[Audio Pipeline<br/>mic frames + PCM playback]
-        BackendClient[Backend Client<br/>upload + TTS playback]
-        DeviceConfig[Generated Device Config<br/>Wi-Fi + laptop LAN IP]
-        Config[App Config + Logging]
-    end
-
-    subgraph TuyaOpen[TuyaOpen SDK]
-        TALSystem[TAL System<br/>threads, timers, workqueue, log]
-        Peripherals[Peripherals<br/>camera, display, touch, audio]
-        Network[Network Stack<br/>TAL network, Wi-Fi, netmgr]
-        Libraries[Support Libraries<br/>HTTP, JSON, TLS, security]
-    end
-
-    subgraph BoardPlatform[Board / Platform / Build]
-        Board[T5AI Board Package]
-        Platform[T5AI Platform SDK]
-        BuildTools[tos.py + CMake + Kconfig]
-        ConfigGen[gen_sidekick_device_config.py]
-    end
-
-    subgraph Backend[Local Sidekick Backend]
-        Laptop[Laptop LAN IP<br/>192.168.x.x:8787]
-        GoServer[Go HTTP Server<br/>apps/sidekick/backend]
-        Health[GET /health]
-        Frame[POST /sidekick/frame]
-        SessionEnd[POST /sidekick/session/end]
-        TTS[POST /sidekick/tts]
-        CaptureStore[Debug JPEG Saves<br/>captures/]
-        SessionStore[Sliding Frame Context<br/>default 1 frame]
-        Analyzer[Visual Tutor Analyzer]
-        LLM[Ollama<br/>llama3.2-vision:11b]
-        Fallback[Demo-safe Fallback<br/>on AI error]
-        TTSPreGen[TTS Pre-generation]
-        TTSCache[Memory + Disk Cache<br/>audio_cache/]
-        TTSEngine[TTS Providers<br/>none by default, OpenAI or ElevenLabs by config]
-    end
-
-    BuildTools --> App
-    BuildTools --> TuyaOpen
-    BuildTools --> BoardPlatform
-    BuildTools --> ConfigGen
-    ConfigGen --> DeviceConfig
-
-    Main --> Config
-    Main --> Hardware
-    Main --> BackendClient
-    Main --> Tutor
-    Main --> UI
-    Main --> Audio
-    Main --> Vision
-    Main --> TALSystem
-
-    Hardware --> Board
-    Board --> Platform
-
-    UI --> Tutor
-    UI --> TouchHW
-    UI --> Audio
-    UI --> Vision
-    UI --> Peripherals
-
-    Audio --> AudioHW
-    Audio --> Peripherals
-
-    Vision --> CameraHW
-    Vision --> TouchHW
-    Vision --> Peripherals
-
-    Tutor --> Vision
-    Tutor --> Audio
-    Tutor --> BackendClient
-
-    DeviceConfig --> BackendClient
-    BackendClient --> Vision
-    BackendClient --> Audio
-    BackendClient --> Network
-    BackendClient --> Libraries
-    Network --> Laptop
-    Laptop --> GoServer
-
-    GoServer --> Health
-    GoServer --> Frame
-    GoServer --> SessionEnd
-    GoServer --> TTS
-    Frame --> CaptureStore
-    Frame --> SessionStore
-    Frame --> Analyzer
-    SessionEnd --> SessionStore
-    SessionEnd --> Analyzer
-    Analyzer --> LLM
-    Analyzer --> Fallback
-    Analyzer --> TTSPreGen
-    TTSPreGen --> TTSCache
-    TTS --> TTSEngine
-    TTS --> TTSCache
-    TTSEngine --> TTSCache
-    TTSCache --> BackendClient
+    Setup["Configure laptop IP, Wi-Fi, backend env"] --> BackendRun["Run backend<br/>go run ."]
+    BackendRun --> BuildFlash["Build and flash firmware"]
+    BuildFlash --> Boot["Board boots<br/>UI + audio + backend worker"]
+    Boot --> Start["Tap KICK and start session"]
+    Start --> Tick["Tutor tick every 1s"]
+    Tick -->|10/15/20/30s interval| Capture["Capture JPEG"]
+    Capture --> Upload["POST /sidekick/frame"]
+    Upload --> Analyze["Backend saves frame<br/>and calls Ollama"]
+    Analyze --> Decision{"Response needed?"}
+    Decision -->|no| Tick
+    Decision -->|yes| Message["Return text message JSON"]
+    Message --> Speech["POST /sidekick/tts<br/>text -> audio"]
+    Speech --> Play["Board plays PCM audio"]
+    Play --> Tick
+    Start -->|tap END| Summary["POST /sidekick/session/end"]
+    Summary --> SummaryAudio["Optional summary TTS"]
+    SummaryAudio --> Done["Back to Kick flow"]
 ```
 
 Speech-to-text is not implemented in the current backend routes. The backend
 currently exposes health, frame upload, session summary, and text-to-speech
 endpoints only.
 
+## Fact-Checked Defaults
+
+| Item | Current value |
+| --- | --- |
+| Ollama model | `llama3.2-vision:11b` |
+| Backend routes | `GET /health`, `POST /sidekick/frame`, `POST /sidekick/session/end`, `POST /sidekick/tts` |
+| Sliding context default | `SIDEKICK_CONTEXT_FRAMES=1` |
+| TTS provider default | `SIDEKICK_TTS_PROVIDER=none` |
+| TTS options | `openai`, `elevenlabs` |
+| Firmware TTS request format | `pcm_16000` |
+| Capture interval options | `10`, `15`, `20`, `30` seconds |
+| STT / speech-to-text | Not implemented |
+
+## Reproduction Commands And Runtime Values
+
+```bash
+# Laptop LAN IP for SIDEKICK_BACKEND_HOST.
+ipconfig getifaddr en0
+
+# Backend service.
+ollama pull llama3.2-vision:11b
+cd apps/sidekick/backend
+go run .
+
+# Firmware network config and build.
+cd apps/sidekick
+cp .env.example .env.local
+# edit SIDEKICK_BACKEND_HOST, SIDEKICK_WIFI_SSID, SIDEKICK_WIFI_PSWD
+uv run python ../../tos.py build
+
+# Device port and flash.
+ls /dev/cu.*
+uv run python ../../tos.py flash -p /dev/cu.usbmodemXXXX
+```
+
 ## Current Boot Flow
 
 1. Initialize Tuya logging.
 2. Register board hardware.
-3. Start camera preview on the LCD.
-4. Start microphone capture.
-5. Start in Hint Coach mode.
-6. Poll touch input so a tap cycles modes: `Active -> Hint -> Summary`.
-7. Run the tutor session state machine.
-
-Speaker output is intentionally not part of the first scaffold because the
-external speaker module still needs hardware validation.
+3. Initialize KV, software timers, and the work queue.
+4. Initialize the tutor session in Hint mode with the default capture interval.
+5. Start the LCD/touch UI.
+6. Open microphone input and count captured PCM frames.
+7. Play the startup chime when enabled.
+8. Start the backend worker thread; Wi-Fi/network setup is deferred until the
+   first upload.
+9. Start camera preview only when enabled; otherwise the home screen owns the
+   display.
+10. Poll touch input and tick the tutor session state machine.
 
 ## Build
 
