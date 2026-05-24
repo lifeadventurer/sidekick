@@ -11,10 +11,12 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"math"
 	"net/http"
 	"net/url"
 	"os"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -35,6 +37,10 @@ const (
 	defaultMaxTTSChars     = 600
 	defaultCaptureDir      = "captures"
 	defaultAudioCacheDir   = "audio_cache"
+	defaultRAGMemoryPath   = "data/rag_memory.jsonl"
+	defaultRAGMaxEntries   = 500
+	defaultRAGTopK         = 3
+	defaultRAGMinSimilarity = 0.75
 
 	defaultOpenAITTSURL    = "https://api.openai.com/v1/audio/speech"
 	defaultOpenAITTSModel  = "gpt-4o-mini-tts"
@@ -44,6 +50,9 @@ const (
 	defaultElevenLabsTTSURL       = "https://api.elevenlabs.io/v1/text-to-speech"
 	defaultElevenLabsTTSModel     = "eleven_flash_v2_5"
 	defaultElevenLabsOutputFormat = "mp3_44100_128"
+
+	defaultRAGEmbedModel  = "text-embedding-3-small"
+	defaultOpenAIEmbedURL = "https://api.openai.com/v1/embeddings"
 )
 
 type config struct {
@@ -62,6 +71,7 @@ type config struct {
 	DefaultImageMIME  string
 	CaptureDir        string
 	TTS               ttsConfig
+	RAG               ragConfig
 }
 
 type ttsConfig struct {
@@ -80,6 +90,17 @@ type ttsConfig struct {
 	ElevenLabsOutputFormat string
 }
 
+type ragConfig struct {
+	MemoryPath    string
+	MaxEntries    int
+	TopK          int
+	MinSimilarity float64
+	EmbedProvider string
+	EmbedModel    string
+	EmbedURL      string
+	EmbedAPIKey   string
+}
+
 type ttsCacheEntry struct {
 	Audio       []byte
 	ContentType string
@@ -93,6 +114,8 @@ type server struct {
 	mu       sync.Mutex
 	sessions map[string]*sessionState
 	ttsCache map[string]ttsCacheEntry
+	embedder embedder
+	ragStore *ragMemoryStore
 }
 
 type sessionState struct {
@@ -103,8 +126,15 @@ type frameContext struct {
 	Image         []byte
 	Mode          string
 	Message       string
+	IssueSummary string
 	ShouldRespond bool
 	ObservedAt    time.Time
+}
+
+type analysisResult struct {
+	Message       string `json:"message"`
+	ShouldRespond bool   `json:"should_respond"`
+	IssueSummary  string `json:"issue_summary"`
 }
 
 type sidekickResponse struct {
@@ -112,6 +142,7 @@ type sidekickResponse struct {
 	SessionID     string `json:"session_id,omitempty"`
 	Provider      string `json:"provider"`
 	Message       string `json:"message"`
+	IssueSummary  string `json:"issue_summary,omitempty"`
 	ShouldRespond bool   `json:"should_respond"`
 	ReceivedBytes int    `json:"received_bytes"`
 	LatencyMS     int64  `json:"latency_ms"`
@@ -183,6 +214,16 @@ func loadConfig() config {
 			ElevenLabsModel:        getenv("ELEVENLABS_TTS_MODEL", defaultElevenLabsTTSModel),
 			ElevenLabsOutputFormat: getenv("ELEVENLABS_OUTPUT_FORMAT", defaultElevenLabsOutputFormat),
 		},
+		RAG: ragConfig{
+			MemoryPath:    getenv("SIDEKICK_RAG_MEMORY_PATH", defaultRAGMemoryPath),
+			MaxEntries:    int(getenvInt64("SIDEKICK_RAG_MAX_ENTRIES", defaultRAGMaxEntries)),
+			TopK:          int(getenvInt64("SIDEKICK_RAG_TOP_K", defaultRAGTopK)),
+			MinSimilarity: getenvFloat64("SIDEKICK_RAG_MIN_SIMILARITY", defaultRAGMinSimilarity),
+			EmbedProvider: strings.ToLower(getenv("SIDEKICK_RAG_EMBED_PROVIDER", "")),
+			EmbedModel:    getenv("SIDEKICK_RAG_EMBED_MODEL", defaultRAGEmbedModel),
+			EmbedURL:      getenv("SIDEKICK_RAG_EMBED_URL", defaultOpenAIEmbedURL),
+			EmbedAPIKey:   os.Getenv("OPENAI_API_KEY"),
+		},
 	}
 }
 
@@ -226,7 +267,7 @@ func loadEnvFile(path string) error {
 }
 
 func newServer(cfg config) *server {
-	return &server{
+	srv := &server{
 		cfg: cfg,
 		client: &http.Client{
 			Timeout: cfg.RequestTimeout,
@@ -234,6 +275,31 @@ func newServer(cfg config) *server {
 		sessions: make(map[string]*sessionState),
 		ttsCache: make(map[string]ttsCacheEntry),
 	}
+	if cfg.RAG.MemoryPath != "" {
+		srv.ragStore = newRAGMemoryStore(cfg.RAG.MemoryPath, cfg.RAG.MaxEntries)
+		if err := srv.ragStore.load(); err != nil {
+			logWarn("RAG memory load failed", "path", cfg.RAG.MemoryPath, "error", err)
+		}
+		switch cfg.RAG.EmbedProvider {
+		case "openai":
+			if cfg.RAG.EmbedAPIKey != "" {
+				srv.embedder = &openaiEmbedder{
+					apiKey: cfg.RAG.EmbedAPIKey,
+					model:  cfg.RAG.EmbedModel,
+					url:    cfg.RAG.EmbedURL,
+					client: srv.client,
+				}
+				logInfo("RAG enabled", "embed_provider", "openai", "model", cfg.RAG.EmbedModel)
+			} else {
+				logWarn("RAG embed provider is openai but OPENAI_API_KEY is not set; RAG disabled")
+			}
+		case "", "none":
+			// RAG embedding disabled
+		default:
+			logWarn("unsupported RAG embed provider; RAG disabled", "provider", cfg.RAG.EmbedProvider)
+		}
+	}
+	return srv
 }
 
 func (s *server) handleHealth(w http.ResponseWriter, r *http.Request) {
@@ -243,6 +309,7 @@ func (s *server) handleHealth(w http.ResponseWriter, r *http.Request) {
 		"model":    s.cfg.OllamaModel,
 		"context":  s.cfg.ContextFrames,
 		"tts":      s.cfg.TTS.Provider,
+		"rag":      s.ragEnabled(),
 	})
 }
 
@@ -279,7 +346,7 @@ func (s *server) handleFrame(w http.ResponseWriter, r *http.Request) {
 	}
 	priorFrames := s.sessionFrames(sessionID)
 
-	message, shouldRespond, provider, err := s.analyze(r.Context(), mode, imageBytes, priorFrames, false)
+	result, provider, err := s.analyze(r.Context(), sessionID, mode, imageBytes, priorFrames, false)
 	if err != nil {
 		logError("analysis failed", "error", err)
 		writeJSON(w, http.StatusBadGateway, errorResponse{Error: err.Error()})
@@ -288,23 +355,26 @@ func (s *server) handleFrame(w http.ResponseWriter, r *http.Request) {
 	s.recordFrame(sessionID, frameContext{
 		Image:         append([]byte(nil), imageBytes...),
 		Mode:          mode,
-		Message:       message,
-		ShouldRespond: shouldRespond,
+		Message:       result.Message,
+		IssueSummary: result.IssueSummary,
+		ShouldRespond: result.ShouldRespond,
 		ObservedAt:    time.Now(),
 	})
+	s.storeRAGMemory(r.Context(), sessionID, mode, result)
 
 	if s.cfg.Verbose {
-		logInfo("frame result", "session", sessionID, "provider", provider, "mode", mode, "should_respond", shouldRespond, "message", message)
+		logInfo("frame result", "session", sessionID, "provider", provider, "mode", mode, "should_respond", result.ShouldRespond, "message", result.Message, "issue_summary", result.IssueSummary)
 	}
 
-	s.maybeGenerateTTS(r.Context(), shouldRespond, message)
+	s.maybeGenerateTTS(r.Context(), result.ShouldRespond, result.Message)
 
 	writeJSON(w, http.StatusOK, sidekickResponse{
 		Mode:          mode,
 		SessionID:     sessionID,
 		Provider:      provider,
-		Message:       message,
-		ShouldRespond: shouldRespond,
+		Message:       result.Message,
+		IssueSummary:  result.IssueSummary,
+		ShouldRespond: result.ShouldRespond,
 		ReceivedBytes: len(imageBytes),
 		LatencyMS:     time.Since(start).Milliseconds(),
 	})
@@ -324,26 +394,28 @@ func (s *server) handleSessionEnd(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	message, shouldRespond, provider, err := s.analyze(r.Context(), "summary", nil, frames, true)
+	result, provider, err := s.analyze(r.Context(), sessionID, "summary", nil, frames, true)
 	if err != nil {
 		logError("summary failed", "error", err)
 		writeJSON(w, http.StatusBadGateway, errorResponse{Error: err.Error()})
 		return
 	}
+	s.storeRAGMemory(r.Context(), sessionID, "summary", result)
 	s.clearSession(sessionID)
 
 	if s.cfg.Verbose {
-		logInfo("summary result", "session", sessionID, "provider", provider, "should_respond", shouldRespond, "message", message)
+		logInfo("summary result", "session", sessionID, "provider", provider, "should_respond", result.ShouldRespond, "message", result.Message, "issue_summary", result.IssueSummary)
 	}
 
-	s.maybeGenerateTTS(r.Context(), shouldRespond, message)
+	s.maybeGenerateTTS(r.Context(), result.ShouldRespond, result.Message)
 
 	writeJSON(w, http.StatusOK, sidekickResponse{
 		Mode:          "summary",
 		SessionID:     sessionID,
 		Provider:      provider,
-		Message:       message,
-		ShouldRespond: shouldRespond,
+		Message:       result.Message,
+		IssueSummary:  result.IssueSummary,
+		ShouldRespond: result.ShouldRespond,
 		LatencyMS:     time.Since(start).Milliseconds(),
 	})
 }
@@ -792,40 +864,62 @@ func (s *server) doAudioRequest(req *http.Request, label string) ([]byte, string
 	return body, resp.Header.Get("Content-Type"), nil
 }
 
-func (s *server) analyze(ctx context.Context, mode string, image []byte, priorFrames []frameContext, summary bool) (string, bool, string, error) {
+func (s *server) analyze(ctx context.Context, sessionID, mode string, image []byte, priorFrames []frameContext, summary bool) (analysisResult, string, error) {
 	switch s.cfg.Provider {
 	case "fake", "mock", "":
-		return fakeMessage(mode, summary), true, "fake", nil
+		return fakeAnalysis(mode, summary), "fake", nil
 	case "ollama":
-		message, err := s.callOllama(ctx, mode, image, priorFrames, summary)
+		var memories []ragMemoryMatch
+		if s.ragEnabled() {
+			issueSummary, err := s.callOllamaIssueSummary(ctx, mode, image, priorFrames, summary)
+			if err != nil {
+				logWarn("RAG issue summary failed; continuing without retrieval", "error", err)
+			} else {
+				memories = s.retrieveRAGMemories(ctx, sessionID, issueSummary)
+			}
+		}
+
+		result, err := s.callOllama(ctx, mode, image, priorFrames, summary, memories)
 		if err != nil {
 			if s.cfg.FallbackOnAIError {
 				logWarn("ollama unavailable; returning fallback response", "error", err)
 				if summary {
-					return fakeMessage(mode, true), true, "ollama-fallback", nil
+					return fakeAnalysis(mode, true), "ollama-fallback", nil
 				}
-				return "", false, "ollama-fallback", nil
+				return analysisResult{}, "ollama-fallback", nil
 			}
-			return "", false, "ollama", err
+			return analysisResult{}, "ollama", err
 		}
-		message, shouldRespond := parseModelDecision(message)
-		if summary && !shouldRespond {
-			return "Session ended. Review the last visible step and choose the next small move.", true, "ollama", nil
+		if summary && !result.ShouldRespond {
+			result.Message = "Session ended. Review the last visible step and choose the next small move."
+			result.ShouldRespond = true
 		}
-		return message, shouldRespond, "ollama", nil
+		return result, "ollama", nil
 	default:
-		return "", false, s.cfg.Provider, fmt.Errorf("unsupported SIDEKICK_AI_PROVIDER %q", s.cfg.Provider)
+		return analysisResult{}, s.cfg.Provider, fmt.Errorf("unsupported SIDEKICK_AI_PROVIDER %q", s.cfg.Provider)
 	}
 }
 
-func (s *server) callOllama(_ context.Context, mode string, image []byte, priorFrames []frameContext, summary bool) (string, error) {
-	messages := make([]ollamaMessage, 0, len(priorFrames)+1)
+func (s *server) callOllamaIssueSummary(ctx context.Context, mode string, image []byte, priorFrames []frameContext, summary bool) (string, error) {
+	result, err := s.callOllamaWithPrompt(ctx, mode, image, priorFrames, summary, nil, issueSummaryPrompt(mode, summary), 60)
+	if err != nil {
+		return "", err
+	}
+	return result.IssueSummary, nil
+}
+
+func (s *server) callOllama(ctx context.Context, mode string, image []byte, priorFrames []frameContext, summary bool, memories []ragMemoryMatch) (analysisResult, error) {
+	return s.callOllamaWithPrompt(ctx, mode, image, priorFrames, summary, memories, snapshotPrompt(mode, summary), s.cfg.MaxOutputTokens)
+}
+
+func (s *server) callOllamaWithPrompt(_ context.Context, mode string, image []byte, priorFrames []frameContext, summary bool, memories []ragMemoryMatch, prompt string, maxTokens int) (analysisResult, error) {
+	messages := make([]ollamaMessage, 0, len(priorFrames)+2)
 
 	imageCount := 0
 	imageBytes := len(image)
 	for idx, frame := range priorFrames {
-		content := fmt.Sprintf("Prior snapshot %d of %d. Mode=%s. Time=%s. Previous tutor message=%q. Use this only as recent visible context for the current request.",
-			idx+1, len(priorFrames), frame.Mode, frame.ObservedAt.Format(time.RFC3339), frame.Message)
+		content := fmt.Sprintf("Prior snapshot %d of %d. Mode=%s. Time=%s. Previous tutor message=%q. Previous issue summary=%q. Use this only as recent visible context for the current request.",
+			idx+1, len(priorFrames), frame.Mode, frame.ObservedAt.Format(time.RFC3339), frame.Message, frame.IssueSummary)
 		messages = append(messages, ollamaMessage{
 			Role:    "user",
 			Content: content,
@@ -835,17 +929,24 @@ func (s *server) callOllama(_ context.Context, mode string, image []byte, priorF
 		imageBytes += len(frame.Image)
 	}
 
+	if len(memories) > 0 {
+		messages = append(messages, ollamaMessage{
+			Role:    "user",
+			Content: formatRAGMemories(memories),
+		})
+	}
+
 	if image != nil {
 		messages = append(messages, ollamaMessage{
 			Role:    "user",
-			Content: snapshotPrompt(mode, summary),
+			Content: prompt,
 			Images:  []string{base64.StdEncoding.EncodeToString(image)},
 		})
 		imageCount++
 	} else {
 		messages = append(messages, ollamaMessage{
 			Role:    "user",
-			Content: snapshotPrompt(mode, summary),
+			Content: prompt,
 		})
 	}
 
@@ -856,13 +957,13 @@ func (s *server) callOllama(_ context.Context, mode string, image []byte, priorF
 		Messages: messages,
 		Options: ollamaOptions{
 			Temperature: 0.2,
-			NumPredict:  s.cfg.MaxOutputTokens,
+			NumPredict:  maxTokens,
 		},
 	}
 
 	body, err := json.Marshal(payload)
 	if err != nil {
-		return "", err
+		return analysisResult{}, err
 	}
 
 	// Keep the upstream model call diagnostic even if the board HTTP client gives up.
@@ -876,23 +977,23 @@ func (s *server) callOllama(_ context.Context, mode string, image []byte, priorF
 	start := time.Now()
 	req, err := http.NewRequestWithContext(ollamaCtx, http.MethodPost, s.cfg.OllamaChatURL, bytes.NewReader(body))
 	if err != nil {
-		return "", err
+		return analysisResult{}, err
 	}
 	req.Header.Set("Content-Type", "application/json")
 
 	resp, err := s.client.Do(req)
 	if err != nil {
-		return "", fmt.Errorf("Ollama request failed after %s: %w", time.Since(start).Round(time.Millisecond), err)
+		return analysisResult{}, fmt.Errorf("Ollama request failed after %s: %w", time.Since(start).Round(time.Millisecond), err)
 	}
 	defer resp.Body.Close()
 
 	respBody, err := io.ReadAll(io.LimitReader(resp.Body, 2*1024*1024))
 	if err != nil {
-		return "", err
+		return analysisResult{}, err
 	}
 
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return "", fmt.Errorf("Ollama returned HTTP %d: %s", resp.StatusCode, string(respBody))
+		return analysisResult{}, fmt.Errorf("Ollama returned HTTP %d: %s", resp.StatusCode, string(respBody))
 	}
 	if s.cfg.Verbose {
 		logInfo("ollama response", "model", s.cfg.OllamaModel, "mode", mode, "latency", time.Since(start).Round(time.Millisecond), "response_bytes", len(respBody))
@@ -900,10 +1001,10 @@ func (s *server) callOllama(_ context.Context, mode string, image []byte, priorF
 
 	var parsed ollamaChatResponse
 	if err := json.Unmarshal(respBody, &parsed); err != nil {
-		return "", err
+		return analysisResult{}, err
 	}
 	if parsed.Error != "" {
-		return "", errors.New(parsed.Error)
+		return analysisResult{}, errors.New(parsed.Error)
 	}
 
 	text := cleanModelText(parsed.Message.Content)
@@ -912,12 +1013,12 @@ func (s *server) callOllama(_ context.Context, mode string, image []byte, priorF
 	}
 	if text == "" {
 		if strings.TrimSpace(parsed.Message.Thinking) != "" {
-			return "", fmt.Errorf("Ollama response did not include message content; model returned thinking only (done_reason=%s thinking_bytes=%d). Use a non-thinking vision model such as llama3.2-vision:11b or raise SIDEKICK_MAX_OUTPUT_TOKENS.",
+			return analysisResult{}, fmt.Errorf("Ollama response did not include message content; model returned thinking only (done_reason=%s thinking_bytes=%d). Use a non-thinking vision model such as llama3.2-vision:11b or raise SIDEKICK_MAX_OUTPUT_TOKENS.",
 				firstNonEmpty(parsed.DoneReason, "unknown"), len(parsed.Message.Thinking))
 		}
-		return "", fmt.Errorf("Ollama response did not include message content (done_reason=%s)", firstNonEmpty(parsed.DoneReason, "unknown"))
+		return analysisResult{}, fmt.Errorf("Ollama response did not include message content (done_reason=%s)", firstNonEmpty(parsed.DoneReason, "unknown"))
 	}
-	return text, nil
+	return parseModelAnalysis(text), nil
 }
 
 type ollamaChatRequest struct {
@@ -959,6 +1060,7 @@ func snapshotPrompt(mode string, summary bool) string {
 	return strings.Join([]string{
 		sidekickSnapshotPrompt(),
 		sidekickModePrompt(mode, summary),
+		structuredOutputPrompt(),
 	}, "\n\n")
 }
 
@@ -978,6 +1080,18 @@ func sidekickModePrompt(mode string, summary bool) string {
 	}
 }
 
+func structuredOutputPrompt() string {
+	return `Return compact JSON only with these fields: "message", "should_respond", and "issue_summary". "message" is the spoken tutor response or an empty string. "should_respond" is true only when the tutor should speak. "issue_summary" is one concise sentence describing the visible problem, misconception, stuck point, or progress pattern. If no intervention is justified, use {"message":"","should_respond":false,"issue_summary":"..."}.`
+}
+
+func issueSummaryPrompt(mode string, summary bool) string {
+	return strings.Join([]string{
+		sidekickSnapshotPrompt(),
+		sidekickModePrompt(mode, summary),
+		`Return compact JSON only with "issue_summary": one concise sentence describing the visible problem, misconception, stuck point, or progress pattern. Do not include a tutor hint.`,
+	}, "\n\n")
+}
+
 func fakeMessage(mode string, summary bool) string {
 	if summary {
 		return "You made visible progress. Review the last step and decide the next small move."
@@ -987,6 +1101,48 @@ func fakeMessage(mode string, summary bool) string {
 		return "What is the first thing you can label or simplify here?"
 	default:
 		return "Try identifying the main equation or diagram first."
+	}
+}
+
+func fakeAnalysis(mode string, summary bool) analysisResult {
+	message := fakeMessage(mode, summary)
+	return analysisResult{
+		Message:       message,
+		ShouldRespond: strings.TrimSpace(message) != "",
+		IssueSummary:  fakeIssueSummary(mode, summary),
+	}
+}
+
+func fakeIssueSummary(mode string, summary bool) string {
+	if summary {
+		return "The student practiced visible steps and needs one concrete next move."
+	}
+	switch mode {
+	case "active":
+		return "The student appears to need help identifying the first visible step."
+	default:
+		return "The student appears to need help identifying the main equation or diagram."
+	}
+}
+
+func parseModelAnalysis(text string) analysisResult {
+	text = cleanModelText(text)
+	var result analysisResult
+	if err := json.Unmarshal([]byte(text), &result); err == nil {
+		result.Message = cleanModelText(result.Message)
+		result.IssueSummary = cleanModelText(result.IssueSummary)
+		if strings.TrimSpace(result.Message) == "" {
+			result.ShouldRespond = false
+		} else {
+			result.ShouldRespond = true
+		}
+		return result
+	}
+
+	message, shouldRespond := parseModelDecision(text)
+	return analysisResult{
+		Message:       message,
+		ShouldRespond: shouldRespond,
 	}
 }
 
@@ -1017,6 +1173,282 @@ func cleanModelText(text string) string {
 	text = strings.ReplaceAll(text, "<|channel>final<|message>", "")
 	text = strings.ReplaceAll(text, "<|message>", "")
 	return strings.TrimSpace(text)
+}
+
+type embedder interface {
+	Embed(ctx context.Context, text string) ([]float64, error)
+}
+
+type openaiEmbedder struct {
+	apiKey string
+	model  string
+	url    string
+	client *http.Client
+}
+
+type openaiEmbedRequest struct {
+	Input string `json:"input"`
+	Model string `json:"model"`
+}
+
+type openaiEmbedResponse struct {
+	Data []struct {
+		Embedding []float64 `json:"embedding"`
+	} `json:"data"`
+	Error *struct {
+		Message string `json:"message"`
+	} `json:"error,omitempty"`
+}
+
+func (e *openaiEmbedder) Embed(ctx context.Context, text string) ([]float64, error) {
+	body, err := json.Marshal(openaiEmbedRequest{
+		Input: strings.TrimSpace(text),
+		Model: e.model,
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, e.url, bytes.NewReader(body))
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Authorization", "Bearer "+e.apiKey)
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := e.client.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("OpenAI embed request failed: %w", err)
+	}
+	defer resp.Body.Close()
+
+	respBody, err := io.ReadAll(io.LimitReader(resp.Body, 2*1024*1024))
+	if err != nil {
+		return nil, err
+	}
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return nil, fmt.Errorf("OpenAI embed returned HTTP %d: %s", resp.StatusCode, string(respBody))
+	}
+
+	var parsed openaiEmbedResponse
+	if err := json.Unmarshal(respBody, &parsed); err != nil {
+		return nil, fmt.Errorf("OpenAI embed response parse failed: %w", err)
+	}
+	if parsed.Error != nil {
+		return nil, fmt.Errorf("OpenAI embed error: %s", parsed.Error.Message)
+	}
+	if len(parsed.Data) == 0 || len(parsed.Data[0].Embedding) == 0 {
+		return nil, errors.New("OpenAI embed returned empty embedding")
+	}
+	return parsed.Data[0].Embedding, nil
+}
+
+type ragMemoryRecord struct {
+	ID           string    `json:"id"`
+	SessionID    string    `json:"session_id"`
+	Mode         string    `json:"mode"`
+	IssueSummary string    `json:"issue_summary"`
+	Message      string    `json:"message"`
+	Vector       []float64 `json:"vector"`
+	CreatedAt    time.Time `json:"created_at"`
+}
+
+type ragMemoryMatch struct {
+	Record     ragMemoryRecord
+	Similarity float64
+}
+
+type ragMemoryStore struct {
+	path       string
+	maxEntries int
+	mu         sync.Mutex
+	entries    []ragMemoryRecord
+}
+
+func newRAGMemoryStore(path string, maxEntries int) *ragMemoryStore {
+	if maxEntries <= 0 {
+		maxEntries = defaultRAGMaxEntries
+	}
+	return &ragMemoryStore{path: path, maxEntries: maxEntries}
+}
+
+func (s *server) ragEnabled() bool {
+	return s.embedder != nil && s.ragStore != nil
+}
+
+func (s *server) retrieveRAGMemories(ctx context.Context, sessionID, issueSummary string) []ragMemoryMatch {
+	if !s.ragEnabled() || strings.TrimSpace(issueSummary) == "" {
+		return nil
+	}
+	vector, err := s.embedder.Embed(ctx, issueSummary)
+	if err != nil {
+		logWarn("RAG embed failed; continuing without memories", "error", err)
+		return nil
+	}
+	return s.ragStore.search(sessionID, vector, s.cfg.RAG.TopK, s.cfg.RAG.MinSimilarity)
+}
+
+func (s *server) storeRAGMemory(ctx context.Context, sessionID, mode string, result analysisResult) {
+	if !s.ragEnabled() || !result.ShouldRespond || strings.TrimSpace(result.Message) == "" || strings.TrimSpace(result.IssueSummary) == "" {
+		return
+	}
+	vector, err := s.embedder.Embed(ctx, result.IssueSummary)
+	if err != nil {
+		logWarn("RAG memory embed failed; skipping store", "error", err)
+		return
+	}
+	record := ragMemoryRecord{
+		ID:           ragMemoryID(sessionID, mode, result.IssueSummary, time.Now()),
+		SessionID:    sessionID,
+		Mode:         normalizeMode(mode),
+		IssueSummary: strings.TrimSpace(result.IssueSummary),
+		Message:      strings.TrimSpace(result.Message),
+		Vector:       vector,
+		CreatedAt:    time.Now().UTC(),
+	}
+	if err := s.ragStore.add(record); err != nil {
+		logWarn("RAG memory store failed", "error", err)
+	}
+}
+
+func (m *ragMemoryStore) load() error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	data, err := os.ReadFile(m.path)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil
+		}
+		return err
+	}
+	lines := strings.Split(string(data), "\n")
+	entries := make([]ragMemoryRecord, 0, len(lines))
+	for _, line := range lines {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		var record ragMemoryRecord
+		if err := json.Unmarshal([]byte(line), &record); err != nil {
+			logWarn("skipping invalid RAG memory line", "error", err)
+			continue
+		}
+		if len(record.Vector) == 0 || strings.TrimSpace(record.IssueSummary) == "" {
+			continue
+		}
+		entries = append(entries, record)
+	}
+	m.entries = pruneRAGEntries(entries, m.maxEntries)
+	return nil
+}
+
+func (m *ragMemoryStore) add(record ragMemoryRecord) error {
+	if len(record.Vector) == 0 {
+		return errors.New("RAG memory vector is empty")
+	}
+
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	m.entries = append(m.entries, record)
+	m.entries = pruneRAGEntries(m.entries, m.maxEntries)
+	return m.writeLocked()
+}
+
+func (m *ragMemoryStore) search(sessionID string, query []float64, topK int, minSimilarity float64) []ragMemoryMatch {
+	if topK <= 0 {
+		topK = defaultRAGTopK
+	}
+
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	matches := make([]ragMemoryMatch, 0, topK)
+	for _, record := range m.entries {
+		if record.SessionID != sessionID {
+			continue
+		}
+		similarity := cosineSimilarity(query, record.Vector)
+		if similarity < minSimilarity {
+			continue
+		}
+		matches = append(matches, ragMemoryMatch{Record: record, Similarity: similarity})
+	}
+	sort.Slice(matches, func(i, j int) bool {
+		return matches[i].Similarity > matches[j].Similarity
+	})
+	if len(matches) > topK {
+		matches = matches[:topK]
+	}
+	return append([]ragMemoryMatch(nil), matches...)
+}
+
+func (m *ragMemoryStore) writeLocked() error {
+	if m.path == "" {
+		return nil
+	}
+	if err := os.MkdirAll(filepath.Dir(m.path), 0o755); err != nil {
+		return err
+	}
+	var b strings.Builder
+	for _, record := range m.entries {
+		line, err := json.Marshal(record)
+		if err != nil {
+			return err
+		}
+		b.Write(line)
+		b.WriteByte('\n')
+	}
+	return os.WriteFile(m.path, []byte(b.String()), 0o644)
+}
+
+func pruneRAGEntries(entries []ragMemoryRecord, maxEntries int) []ragMemoryRecord {
+	if maxEntries <= 0 {
+		maxEntries = defaultRAGMaxEntries
+	}
+	if len(entries) <= maxEntries {
+		return append([]ragMemoryRecord(nil), entries...)
+	}
+	return append([]ragMemoryRecord(nil), entries[len(entries)-maxEntries:]...)
+}
+
+func cosineSimilarity(a, b []float64) float64 {
+	if len(a) == 0 || len(a) != len(b) {
+		return 0
+	}
+	var dot, normA, normB float64
+	for idx := range a {
+		dot += a[idx] * b[idx]
+		normA += a[idx] * a[idx]
+		normB += b[idx] * b[idx]
+	}
+	if normA == 0 || normB == 0 {
+		return 0
+	}
+	return dot / (math.Sqrt(normA) * math.Sqrt(normB))
+}
+
+func formatRAGMemories(memories []ragMemoryMatch) string {
+	if len(memories) == 0 {
+		return ""
+	}
+	var b strings.Builder
+	b.WriteString("Similar prior issues for this same session. Use them only to avoid repeating unhelpful guidance and to adapt to recurring mistakes:\n")
+	for idx, memory := range memories {
+		b.WriteString(fmt.Sprintf("%d. Time=%s Similarity=%.2f Issue=%q\n",
+			idx+1,
+			memory.Record.CreatedAt.Format(time.RFC3339),
+			memory.Similarity,
+			memory.Record.IssueSummary,
+		))
+	}
+	return strings.TrimSpace(b.String())
+}
+
+func ragMemoryID(sessionID, mode, issueSummary string, createdAt time.Time) string {
+	sum := sha256.Sum256([]byte(sessionID + "\x00" + mode + "\x00" + issueSummary + "\x00" + createdAt.UTC().Format(time.RFC3339Nano)))
+	return fmt.Sprintf("%x", sum[:8])
 }
 
 func loadCaptureDir() string {
@@ -1146,6 +1578,18 @@ func getenvInt64(name string, fallback int64) int64 {
 	}
 	parsed, err := strconv.ParseInt(value, 10, 64)
 	if err != nil || parsed <= 0 {
+		return fallback
+	}
+	return parsed
+}
+
+func getenvFloat64(name string, fallback float64) float64 {
+	value := os.Getenv(name)
+	if value == "" {
+		return fallback
+	}
+	parsed, err := strconv.ParseFloat(value, 64)
+	if err != nil || parsed < 0 {
 		return fallback
 	}
 	return parsed

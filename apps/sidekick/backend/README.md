@@ -21,6 +21,11 @@ go run .
 The backend sends only per-snapshot mode and image context on each request. The
 main tutor role is not repeated in every `/api/chat` payload.
 
+The model is asked to return compact JSON with a spoken `message`, a
+`should_respond` decision, and an `issue_summary`. The backend still accepts the
+older plain-text/`NO_ACTION` style response so existing local models keep
+working.
+
 When you change `Modelfile`, recreate the model with:
 
 ```bash
@@ -101,6 +106,10 @@ Optional environment variables:
 | `SIDEKICK_AI_FALLBACK` | `1` | Return demo-safe fallback JSON instead of HTTP 502 when Ollama fails (`0` disables) |
 | `SIDEKICK_VERBOSE` | `0` | Enable verbose model and response logs (`go run . -verbose` overrides this) |
 | `SIDEKICK_CAPTURE_DIR` | `captures` | Directory for incoming JPEG debug dumps (`off` to disable) |
+| `SIDEKICK_RAG_MEMORY_PATH` | `data/rag_memory.jsonl` | Local JSONL file for future vector memories |
+| `SIDEKICK_RAG_MAX_ENTRIES` | `500` | Maximum retained RAG memory records |
+| `SIDEKICK_RAG_TOP_K` | `3` | Maximum similar prior issues to inject into the model prompt |
+| `SIDEKICK_RAG_MIN_SIMILARITY` | `0.75` | Minimum cosine similarity for retrieved memories |
 | `SIDEKICK_TTS_PROVIDER` | `none` | `none`, `openai`, or `elevenlabs` |
 | `SIDEKICK_TTS_MAX_CHARS` | `600` | Max text length accepted by `/sidekick/tts` |
 | `OPENAI_API_KEY` | empty | Required for `SIDEKICK_TTS_PROVIDER=openai` |
@@ -152,6 +161,7 @@ Response:
   "session_id": "demo",
   "provider": "ollama",
   "message": "Check the first visible step before simplifying.",
+  "issue_summary": "The student may be simplifying without checking the first visible step.",
   "should_respond": true,
   "received_bytes": 12345,
   "latency_ms": 3
@@ -167,6 +177,7 @@ API response has an empty message:
   "session_id": "demo",
   "provider": "ollama",
   "message": "",
+  "issue_summary": "The student appears to be making visible progress without needing a hint.",
   "should_respond": false,
   "received_bytes": 12345,
   "latency_ms": 3
@@ -181,6 +192,24 @@ POST /sidekick/session/end?session=<id>
 
 This generates a summary from the retained session frames, returns a final
 `summary` response, and clears the in-memory session context.
+
+## RAG Memory
+
+The backend includes local RAG scaffolding for student issue memory:
+
+- Every structured model response includes an `issue_summary`.
+- Only `issue_summary` is intended to be embedded.
+- Spoken responses only are eligible for storage: `should_respond: true`,
+  non-empty `message`, and non-empty `issue_summary`.
+- Memories are scoped by `session` id, persisted as JSONL, capped by
+  `SIDEKICK_RAG_MAX_ENTRIES`, and searched with cosine similarity.
+- Retrieved memories are injected as brief prior issues, not previous tutor
+  replies.
+
+Semantic search is currently disabled by default because no real embedder is
+configured. Until an embedder is plugged into the backend, `issue_summary` is
+returned in JSON but no RAG records are written or searched. The intended local
+Ollama integration point is the current `/api/embed` endpoint.
 
 ## Text To Speech
 

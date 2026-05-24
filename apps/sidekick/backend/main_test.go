@@ -44,6 +44,35 @@ func testServer() *server {
 	})
 }
 
+type fakeEmbedder struct {
+	vectors map[string][]float64
+	fail    bool
+}
+
+func (f fakeEmbedder) Embed(_ context.Context, text string) ([]float64, error) {
+	if f.fail {
+		return nil, fmt.Errorf("embed failed")
+	}
+	if vector, ok := f.vectors[text]; ok {
+		return append([]float64(nil), vector...), nil
+	}
+	return []float64{1, 0}, nil
+}
+
+func enableTestRAG(t *testing.T, srv *server) string {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "rag_memory.jsonl")
+	srv.cfg.RAG = ragConfig{
+		MemoryPath:    path,
+		MaxEntries:    10,
+		TopK:          3,
+		MinSimilarity: 0.75,
+	}
+	srv.ragStore = newRAGMemoryStore(path, srv.cfg.RAG.MaxEntries)
+	srv.embedder = fakeEmbedder{vectors: map[string][]float64{}}
+	return path
+}
+
 func TestHealth(t *testing.T) {
 	srv := testServer()
 
@@ -92,6 +121,9 @@ func TestFrameFakeProvider(t *testing.T) {
 	}
 	if !parsed.ShouldRespond {
 		t.Fatal("expected fake provider to respond")
+	}
+	if parsed.IssueSummary == "" {
+		t.Fatal("expected issue summary")
 	}
 }
 
@@ -250,6 +282,51 @@ func TestOllamaNoAction(t *testing.T) {
 	}
 	if parsed.Message != "" {
 		t.Fatalf("expected empty message, got %q", parsed.Message)
+	}
+}
+
+func TestOllamaStructuredAnalysis(t *testing.T) {
+	srv := testServer()
+	srv.cfg.Provider = "ollama"
+	srv.cfg.OllamaChatURL = "http://ollama.test/api/chat"
+	srv.client = &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		body, err := json.Marshal(ollamaChatResponse{
+			Message: ollamaMessage{
+				Role: "assistant",
+				Content: `{"message":"Check the sign before simplifying.","should_respond":true,"issue_summary":"The student may be missing a negative sign while simplifying."}`,
+			},
+		})
+		if err != nil {
+			return nil, err
+		}
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Header:     make(http.Header),
+			Body:       io.NopCloser(bytes.NewReader(body)),
+		}, nil
+	})}
+
+	req := httptest.NewRequest(http.MethodPost, "/sidekick/frame?mode=hint&session=abc", bytes.NewReader([]byte("image")))
+	req.Header.Set("Content-Type", "image/jpeg")
+	rec := httptest.NewRecorder()
+
+	srv.handleFrame(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected %d, got %d body=%s", http.StatusOK, rec.Code, rec.Body.String())
+	}
+	var parsed sidekickResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &parsed); err != nil {
+		t.Fatal(err)
+	}
+	if parsed.Message != "Check the sign before simplifying." {
+		t.Fatalf("unexpected message %q", parsed.Message)
+	}
+	if parsed.IssueSummary != "The student may be missing a negative sign while simplifying." {
+		t.Fatalf("unexpected issue summary %q", parsed.IssueSummary)
+	}
+	if !parsed.ShouldRespond {
+		t.Fatal("expected should_respond=true")
 	}
 }
 
@@ -437,6 +514,150 @@ func TestSummaryModeRejectedForFrame(t *testing.T) {
 
 	if rec.Code != http.StatusBadRequest {
 		t.Fatalf("expected %d, got %d", http.StatusBadRequest, rec.Code)
+	}
+}
+
+func TestRAGStoresOnlySpokenSummaries(t *testing.T) {
+	srv := testServer()
+	path := enableTestRAG(t, srv)
+
+	srv.storeRAGMemory(context.Background(), "abc", "hint", analysisResult{
+		Message:       "Try checking the sign.",
+		ShouldRespond: true,
+		IssueSummary:  "The student may be missing a negative sign.",
+	})
+	srv.storeRAGMemory(context.Background(), "abc", "hint", analysisResult{
+		Message:       "",
+		ShouldRespond: false,
+		IssueSummary:  "The student is making progress.",
+	})
+
+	matches := srv.ragStore.search("abc", []float64{1, 0}, 3, 0.75)
+	if len(matches) != 1 {
+		t.Fatalf("expected 1 stored memory, got %d", len(matches))
+	}
+	if matches[0].Record.IssueSummary != "The student may be missing a negative sign." {
+		t.Fatalf("unexpected stored summary %q", matches[0].Record.IssueSummary)
+	}
+	if _, err := os.Stat(path); err != nil {
+		t.Fatalf("expected memory file to be written: %v", err)
+	}
+}
+
+func TestRAGSearchSameSessionTopKThreshold(t *testing.T) {
+	store := newRAGMemoryStore(filepath.Join(t.TempDir(), "rag.jsonl"), 10)
+	now := time.Now()
+	for _, record := range []ragMemoryRecord{
+		{ID: "1", SessionID: "abc", IssueSummary: "closest", Vector: []float64{1, 0}, CreatedAt: now},
+		{ID: "2", SessionID: "abc", IssueSummary: "second", Vector: []float64{0.9, 0.1}, CreatedAt: now},
+		{ID: "3", SessionID: "abc", IssueSummary: "below threshold", Vector: []float64{0, 1}, CreatedAt: now},
+		{ID: "4", SessionID: "other", IssueSummary: "other session", Vector: []float64{1, 0}, CreatedAt: now},
+	} {
+		if err := store.add(record); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	matches := store.search("abc", []float64{1, 0}, 3, 0.75)
+	if len(matches) != 2 {
+		t.Fatalf("expected 2 matches, got %d", len(matches))
+	}
+	if matches[0].Record.IssueSummary != "closest" || matches[1].Record.IssueSummary != "second" {
+		t.Fatalf("unexpected match order: %#v", matches)
+	}
+}
+
+func TestRAGPromptInjectionAndStoreAfterSearch(t *testing.T) {
+	srv := testServer()
+	srv.cfg.Provider = "ollama"
+	srv.cfg.OllamaChatURL = "http://ollama.test/api/chat"
+	enableTestRAG(t, srv)
+	srv.embedder = fakeEmbedder{vectors: map[string][]float64{
+		"The student may be missing a negative sign.": []float64{1, 0},
+	}}
+	if err := srv.ragStore.add(ragMemoryRecord{
+		ID:           "prior",
+		SessionID:    "abc",
+		Mode:         "hint",
+		IssueSummary: "The student previously missed a negative sign.",
+		Message:      "Check the sign.",
+		Vector:       []float64{1, 0},
+		CreatedAt:    time.Now().Add(-time.Hour),
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	requestCount := 0
+	srv.client = &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		requestCount++
+		var payload ollamaChatRequest
+		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+			return nil, err
+		}
+		if requestCount == 1 {
+			if strings.Contains(payload.Messages[len(payload.Messages)-1].Content, "Similar prior issues") {
+				t.Fatal("summary pass should not include retrieved memories")
+			}
+			body, err := json.Marshal(ollamaChatResponse{
+				Message: ollamaMessage{Role: "assistant", Content: `{"issue_summary":"The student may be missing a negative sign."}`},
+			})
+			if err != nil {
+				return nil, err
+			}
+			return &http.Response{StatusCode: http.StatusOK, Header: make(http.Header), Body: io.NopCloser(bytes.NewReader(body))}, nil
+		}
+		foundMemory := false
+		for _, message := range payload.Messages {
+			if strings.Contains(message.Content, "Similar prior issues") && strings.Contains(message.Content, "previously missed a negative sign") {
+				foundMemory = true
+			}
+		}
+		if !foundMemory {
+			t.Fatalf("expected final prompt to include retrieved RAG memory: %#v", payload.Messages)
+		}
+		body, err := json.Marshal(ollamaChatResponse{
+			Message: ollamaMessage{Role: "assistant", Content: `{"message":"Check the sign before simplifying.","should_respond":true,"issue_summary":"The student may be missing a negative sign."}`},
+		})
+		if err != nil {
+			return nil, err
+		}
+		return &http.Response{StatusCode: http.StatusOK, Header: make(http.Header), Body: io.NopCloser(bytes.NewReader(body))}, nil
+	})}
+
+	req := httptest.NewRequest(http.MethodPost, "/sidekick/frame?mode=hint&session=abc", bytes.NewReader([]byte("image")))
+	req.Header.Set("Content-Type", "image/jpeg")
+	rec := httptest.NewRecorder()
+
+	srv.handleFrame(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected %d, got %d body=%s", http.StatusOK, rec.Code, rec.Body.String())
+	}
+	if requestCount != 2 {
+		t.Fatalf("expected summary and final Ollama calls, got %d", requestCount)
+	}
+	matches := srv.ragStore.search("abc", []float64{1, 0}, 3, 0.75)
+	if len(matches) != 2 {
+		t.Fatalf("expected prior plus newly stored memory after response, got %d", len(matches))
+	}
+}
+
+func TestRAGEmbedFailureDoesNotFailFrame(t *testing.T) {
+	srv := testServer()
+	enableTestRAG(t, srv)
+	srv.embedder = fakeEmbedder{fail: true}
+
+	req := httptest.NewRequest(http.MethodPost, "/sidekick/frame?mode=hint&session=abc", bytes.NewReader([]byte("image")))
+	req.Header.Set("Content-Type", "image/jpeg")
+	rec := httptest.NewRecorder()
+
+	srv.handleFrame(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected %d, got %d body=%s", http.StatusOK, rec.Code, rec.Body.String())
+	}
+	if matches := srv.ragStore.search("abc", []float64{1, 0}, 3, 0.75); len(matches) != 0 {
+		t.Fatalf("expected no stored memories after embed failure, got %d", len(matches))
 	}
 }
 
@@ -787,5 +1008,150 @@ func TestTTSDiskCaching(t *testing.T) {
 	}
 	if string(reloadedEntry.Audio) != "audio-on-disk-data" {
 		t.Fatalf("expected reloaded audio to be %q, got %q", "audio-on-disk-data", string(reloadedEntry.Audio))
+	}
+}
+
+func TestOpenAIEmbedder(t *testing.T) {
+	expectedModel := "text-embedding-3-small"
+	expectedVector := []float64{0.1, 0.2, 0.3}
+	apiKey := "test-embed-key"
+
+	mockServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			t.Fatalf("expected POST, got %s", r.Method)
+		}
+		if r.Header.Get("Authorization") != "Bearer "+apiKey {
+			t.Fatalf("unexpected authorization header %q", r.Header.Get("Authorization"))
+		}
+		if r.Header.Get("Content-Type") != "application/json" {
+			t.Fatalf("unexpected content-type %q", r.Header.Get("Content-Type"))
+		}
+
+		var req openaiEmbedRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			t.Fatal(err)
+		}
+		if req.Model != expectedModel {
+			t.Fatalf("expected model %q, got %q", expectedModel, req.Model)
+		}
+		if req.Input != "test input" {
+			t.Fatalf("expected input %q, got %q", "test input", req.Input)
+		}
+
+		resp := openaiEmbedResponse{
+			Data: []struct {
+				Embedding []float64 `json:"embedding"`
+			}{
+				{Embedding: expectedVector},
+			},
+		}
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(resp)
+	}))
+	defer mockServer.Close()
+
+	emb := &openaiEmbedder{
+		apiKey: apiKey,
+		model:  expectedModel,
+		url:    mockServer.URL,
+		client: mockServer.Client(),
+	}
+
+	vector, err := emb.Embed(context.Background(), "  test input  ")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(vector) != 3 {
+		t.Fatalf("expected 3-dimensional vector, got %d", len(vector))
+	}
+	for idx, v := range expectedVector {
+		if vector[idx] != v {
+			t.Fatalf("vector[%d] expected %f, got %f", idx, v, vector[idx])
+		}
+	}
+}
+
+func TestOpenAIEmbedderError(t *testing.T) {
+	mockServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusUnauthorized)
+		w.Write([]byte(`{"error":{"message":"invalid api key"}}`))
+	}))
+	defer mockServer.Close()
+
+	emb := &openaiEmbedder{
+		apiKey: "bad-key",
+		model:  "text-embedding-3-small",
+		url:    mockServer.URL,
+		client: mockServer.Client(),
+	}
+
+	_, err := emb.Embed(context.Background(), "test")
+	if err == nil {
+		t.Fatal("expected error for unauthorized request")
+	}
+	if !strings.Contains(err.Error(), "HTTP 401") {
+		t.Fatalf("expected HTTP 401 in error, got %q", err.Error())
+	}
+}
+
+func TestRAGWithOpenAIEmbedder(t *testing.T) {
+	mockServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		resp := openaiEmbedResponse{
+			Data: []struct {
+				Embedding []float64 `json:"embedding"`
+			}{
+				{Embedding: []float64{1, 0}},
+			},
+		}
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(resp)
+	}))
+	defer mockServer.Close()
+
+	path := filepath.Join(t.TempDir(), "rag_memory.jsonl")
+	srv := newServer(config{
+		Provider:         "fake",
+		OllamaModel:      defaultOllamaModel,
+		OllamaChatURL:    defaultOllamaChatURL,
+		MaxImageBytes:    defaultMaxImageBytes,
+		RequestTimeout:   2 * time.Second,
+		DefaultImageMIME: "image/jpeg",
+		AllowMultipart:   true,
+		MaxOutputTokens:  120,
+		ContextFrames:    2,
+		TTS: ttsConfig{
+			Provider: "none",
+			MaxChars: defaultMaxTTSChars,
+		},
+		RAG: ragConfig{
+			MemoryPath:    path,
+			MaxEntries:    10,
+			TopK:          3,
+			MinSimilarity: 0.5,
+			EmbedProvider: "openai",
+			EmbedModel:    "text-embedding-3-small",
+			EmbedURL:      mockServer.URL,
+			EmbedAPIKey:   "test-key",
+		},
+	})
+
+	if !srv.ragEnabled() {
+		t.Fatal("expected RAG to be enabled when embed provider is configured")
+	}
+
+	// Store a memory
+	srv.storeRAGMemory(context.Background(), "sess1", "hint", analysisResult{
+		Message:       "Check the sign.",
+		ShouldRespond: true,
+		IssueSummary:  "Student missed a negative sign.",
+	})
+
+	// Search for it
+	matches := srv.retrieveRAGMemories(context.Background(), "sess1", "negative sign issue")
+	if len(matches) != 1 {
+		t.Fatalf("expected 1 match, got %d", len(matches))
+	}
+	if matches[0].Record.IssueSummary != "Student missed a negative sign." {
+		t.Fatalf("unexpected match %q", matches[0].Record.IssueSummary)
 	}
 }
