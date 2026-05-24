@@ -171,11 +171,14 @@ func TestFrameOllamaProvider(t *testing.T) {
 		if payload.Think {
 			t.Fatal("expected think=false request")
 		}
-		if len(payload.Messages) != 2 {
-			t.Fatalf("expected 2 messages, got %d", len(payload.Messages))
+		if len(payload.Messages) != 1 {
+			t.Fatalf("expected current snapshot message only, got %d", len(payload.Messages))
 		}
-		if len(payload.Messages[1].Images) != 1 {
-			t.Fatalf("expected 1 image, got %d", len(payload.Messages[1].Images))
+		if payload.Messages[0].Role == "system" {
+			t.Fatal("expected no per-request system message")
+		}
+		if len(payload.Messages[0].Images) != 1 {
+			t.Fatalf("expected 1 image, got %d", len(payload.Messages[0].Images))
 		}
 
 		body, err := json.Marshal(ollamaChatResponse{
@@ -600,10 +603,15 @@ func TestOllamaUsesPriorFrameContext(t *testing.T) {
 			return nil, err
 		}
 		if requestCount == 2 {
-			if len(payload.Messages) != 3 {
-				t.Fatalf("expected system, previous frame, current frame messages; got %d", len(payload.Messages))
+			if len(payload.Messages) != 2 {
+				t.Fatalf("expected previous and current snapshot messages; got %d", len(payload.Messages))
 			}
-			if len(payload.Messages[1].Images) != 1 || len(payload.Messages[2].Images) != 1 {
+			for idx, message := range payload.Messages {
+				if message.Role == "system" {
+					t.Fatalf("message %d unexpectedly used system role", idx)
+				}
+			}
+			if len(payload.Messages[0].Images) != 1 || len(payload.Messages[1].Images) != 1 {
 				t.Fatalf("expected previous and current images in second request")
 			}
 		}

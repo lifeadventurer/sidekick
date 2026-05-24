@@ -1,4 +1,5 @@
 __pycache__
+.DS_Store
 .vscode
 .tags
 .env.json
@@ -30,4 +31,3 @@ dist
 /.set_example
 /dist
 *monitor.log
-

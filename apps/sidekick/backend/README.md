@@ -8,12 +8,23 @@ and returns compact JSON for the device UI.
 
 ## Run
 
-Ollama mode, using your local `llama3.2-vision:11b`:
+Ollama mode uses a local `sidekick-vision` model that stores the stable
+SideKick system prompt in Ollama. Create it once before running the backend:
 
 ```bash
 ollama pull llama3.2-vision:11b
 cd apps/sidekick/backend
+ollama create sidekick-vision -f Modelfile
 go run .
+```
+
+The backend sends only per-snapshot mode and image context on each request. The
+main tutor role is not repeated in every `/api/chat` payload.
+
+When you change `Modelfile`, recreate the model with:
+
+```bash
+ollama create sidekick-vision -f Modelfile
 ```
 
 Use verbose logs when you want to see what Ollama returned and what the backend
@@ -36,9 +47,10 @@ curl -s http://localhost:8787/health
 curl -s -X POST --data-binary @frame.jpg -H 'Content-Type: image/jpeg' 'http://localhost:8787/sidekick/frame?mode=hint&session=demo'
 ```
 
-For the hackathon demo, prefer `llama3.2-vision:11b` over local thinking-heavy
-models. Some thinking models can spend the whole token budget in `thinking` and
-return an empty `message.content`, which the backend treats as a failed analysis.
+For the hackathon demo, prefer the included `sidekick-vision` model over local
+thinking-heavy models. Some thinking models can spend the whole token budget in
+`thinking` and return an empty `message.content`, which the backend treats as a
+failed analysis.
 
 When calling from the board, use the laptop LAN IP instead of `localhost`, for
 example:
@@ -79,7 +91,7 @@ Optional environment variables:
 | --- | --- | --- |
 | `PORT` | `8787` | HTTP listen port |
 | `SIDEKICK_AI_PROVIDER` | `ollama` | `ollama` or `fake` |
-| `OLLAMA_MODEL` | `llama3.2-vision:11b` | Local Ollama vision model |
+| `OLLAMA_MODEL` | `sidekick-vision:latest` | Local Ollama vision model created from `Modelfile` |
 | `OLLAMA_CHAT_URL` | `http://localhost:11434/api/chat` | Ollama chat endpoint |
 | `SIDEKICK_MAX_IMAGE_BYTES` | `4194304` | Max uploaded image size |
 | `SIDEKICK_SHARED_SECRET` | empty | Optional bearer token required from firmware |
