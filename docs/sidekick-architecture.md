@@ -21,80 +21,52 @@ apps/sidekick/
 
 ```mermaid
 flowchart LR
-    User["Student"] --> UI["Board UI<br/>Home, Kick, Settings, Tests"]
-    UI --> Tutor["Tutor session<br/>Active, Hint, Summary"]
-    Tutor --> Client["Firmware backend client"]
-
-    subgraph Board["T5AI board firmware"]
-        UI
-        Tutor
-        Client
-        Camera["Camera / JPEG capture"]
-        Audio["Audio codec<br/>mic count + PCM playback"]
-    end
-
-    subgraph Config["Build-time config"]
-        Env["apps/sidekick/.env.local"]
-        Gen["gen_sidekick_device_config.py"]
-        Header["sidekick_device_config.h"]
-    end
-
-    subgraph Backend["Laptop backend"]
-        Server["Go server :8787"]
-        Frame["/sidekick/frame"]
-        EndSession["/sidekick/session/end"]
-        TTS["/sidekick/tts"]
-        Cache["TTS cache<br/>memory + audio_cache/"]
-    end
-
-    subgraph Services["AI and speech services"]
-        Ollama["Ollama vision<br/>llama3.2-vision:11b"]
-        OpenAI["OpenAI TTS"]
-        ElevenLabs["ElevenLabs TTS"]
-    end
-
-    Env --> Gen --> Header --> Client
-    Tutor -->|capture interval reached| Camera
-    Camera -->|JPEG bytes| Client
-    Client -->|Wi-Fi HTTP POST| Frame
-    Client -->|session end| EndSession
-    Frame -->|image context| Ollama
-    EndSession -->|retained frames| Ollama
-    Ollama -->|text decision JSON| Server
-    Server -->|should_respond + message| Client
-    Server -->|pre-generate speech when enabled| TTS
-    Client -->|request pcm_16000 for message| TTS
-    TTS -->|configured provider| OpenAI
-    TTS -->|configured provider| ElevenLabs
-    OpenAI --> Cache
-    ElevenLabs --> Cache
-    Cache -->|audio response| Client
-    Client --> Audio
-    Audio --> User
+    User["Student"] --> Board["T5AI board firmware<br/>UI, tutor state, camera, audio"]
+    Board -->|JPEG frames + session events<br/>Wi-Fi HTTP| Backend["Go backend :8787"]
+    Backend -->|current + recent frames| Ollama["Ollama vision model"]
+    Ollama -->|NO_ACTION or tutor hint| Backend
+    Backend -->|JSON response<br/>should_respond + message| Board
+    Backend -->|optional speech synthesis| TTS["TTS provider<br/>OpenAI or ElevenLabs"]
+    TTS -->|PCM/WAV audio| Backend
+    Board -->|speaker output| User
 ```
+
+Build-time config still comes from `.env.local` and generated headers. Backend
+routes, provider options, and defaults are listed below in Fact-Checked Defaults.
+The image-processing loop is expanded in the Sequential Workflow.
 
 ## Sequential Workflow
 
 ```mermaid
 flowchart TD
-    Setup["Configure laptop IP, Wi-Fi, backend env"] --> BackendRun["Run backend<br/>go run ."]
-    BackendRun --> BuildFlash["Build and flash firmware"]
-    BuildFlash --> Boot["Board boots<br/>UI + audio + backend worker"]
-    Boot --> Start["Tap KICK and start session"]
-    Start --> Tick["Tutor tick every 1s"]
-    Tick -->|10/15/20/30s interval| Capture["Capture JPEG"]
-    Capture --> Upload["POST /sidekick/frame"]
-    Upload --> Analyze["Backend saves frame<br/>and calls Ollama"]
-    Analyze --> Decision{"Response needed?"}
-    Decision -->|no| Tick
-    Decision -->|yes| Message["Return text message JSON"]
-    Message --> Speech["POST /sidekick/tts<br/>text -> audio"]
-    Speech --> Play["Board plays PCM audio"]
-    Play --> Tick
-    Start -->|tap END| Summary["POST /sidekick/session/end"]
-    Summary --> SummaryAudio["Optional summary TTS"]
-    SummaryAudio --> Done["Back to Kick flow"]
+    Start["Student taps KICK"] --> Timer["Firmware starts tutoring session"]
+    Timer --> Interval["Every selected interval<br/>10 / 15 / 20 / 30s"]
+    Interval --> Capture["Camera captures JPEG"]
+    Capture --> Upload["Firmware POSTs JPEG<br/>/sidekick/frame"]
+
+    Upload --> Save["Backend saves frame"]
+    Save --> Context["Backend loads recent session frames"]
+    Context --> Ollama["Backend sends current + prior frames<br/>to Ollama vision model"]
+    Ollama --> Decision{"Does the student need help?"}
+
+    Decision -->|No: NO_ACTION| QuietJSON["Backend returns JSON<br/>should_respond=false"]
+    QuietJSON --> Quiet["Firmware stays quiet"]
+
+    Decision -->|Yes: tutor hint| HintJSON["Backend returns JSON<br/>should_respond=true + message"]
+    HintJSON --> Parse["Firmware parses message"]
+    Parse --> TTS["Firmware requests audio<br/>/sidekick/tts"]
+    TTS --> Audio["Backend returns PCM/WAV audio"]
+    Audio --> Play["Board speaker plays hint"]
+
+    Quiet --> Wait["Wait for next interval"]
+    Play --> Wait
+    Wait --> Interval
 ```
+
+`NO_ACTION` means the backend decided the student does not need an
+interruption, so the firmware does not play anything. A tutor message means the
+firmware asks `/sidekick/tts` for playable audio, then sends the returned PCM/WAV
+data to the speaker. This loop repeats until the student ends the session.
 
 Speech-to-text is not implemented in the current backend routes. The backend
 currently exposes health, frame upload, session summary, and text-to-speech
