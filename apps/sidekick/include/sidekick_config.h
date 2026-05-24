@@ -1,6 +1,8 @@
 #ifndef SIDEKICK_CONFIG_H
 #define SIDEKICK_CONFIG_H
 
+#include "sidekick_device_config.h"
+
 #define SIDEKICK_APP_NAME "sidekick"
 
 #define SIDEKICK_CAMERA_WIDTH  480
@@ -15,12 +17,7 @@
 #define SIDEKICK_ENABLE_CAMERA_PREVIEW 0
 #define SIDEKICK_ENABLE_STARTUP_CHIME  1
 
-#define SIDEKICK_BACKEND_HOST       ""
-#define SIDEKICK_BACKEND_PORT       8787
-#define SIDEKICK_BACKEND_SESSION_ID "sidekick"
-#define SIDEKICK_BACKEND_TIMEOUT_MS (120 * 1000)
-
-#define SIDEKICK_WIFI_SSID ""
-#define SIDEKICK_WIFI_PSWD ""
+/* Save each JPEG capture to disk for debugging (best-effort; does not fail capture). */
+#define SIDEKICK_ENABLE_CAPTURE_SAVE 1
 
 #endif /* SIDEKICK_CONFIG_H */

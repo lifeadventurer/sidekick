@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -88,6 +89,44 @@ func TestFrameFakeProvider(t *testing.T) {
 	}
 	if !parsed.ShouldRespond {
 		t.Fatal("expected fake provider to respond")
+	}
+}
+
+func TestFramePersistCapture(t *testing.T) {
+	dir := t.TempDir()
+	srv := testServer()
+	srv.cfg.CaptureDir = dir
+	body := []byte{0xff, 0xd8, 0xff, 0xd9}
+
+	req := httptest.NewRequest(http.MethodPost, "/sidekick/frame?mode=hint&session=demo", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "image/jpeg")
+	rec := httptest.NewRecorder()
+
+	srv.handleFrame(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected %d, got %d body=%s", http.StatusOK, rec.Code, rec.Body.String())
+	}
+
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 1 {
+		t.Fatalf("expected 1 saved capture, got %d", len(entries))
+	}
+	if !strings.HasPrefix(entries[0].Name(), "demo_hint_") {
+		t.Fatalf("unexpected capture name %q", entries[0].Name())
+	}
+	if !strings.HasSuffix(entries[0].Name(), ".jpg") {
+		t.Fatalf("expected .jpg capture, got %q", entries[0].Name())
+	}
+
+	saved, err := os.ReadFile(filepath.Join(dir, entries[0].Name()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(saved, body) {
+		t.Fatalf("saved capture bytes mismatch")
 	}
 }
 

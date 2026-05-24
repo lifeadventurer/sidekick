@@ -75,6 +75,7 @@ Optional environment variables:
 | `SIDEKICK_TIMEOUT_SECONDS` | `120` | Upstream Ollama request timeout |
 | `SIDEKICK_MAX_OUTPUT_TOKENS` | `240` | Max tutor response tokens |
 | `SIDEKICK_CONTEXT_FRAMES` | `3` | Sliding window of recent frames retained per session |
+| `SIDEKICK_CAPTURE_DIR` | `captures` | Directory for incoming JPEG debug dumps (`off` to disable) |
 | `SIDEKICK_TTS_PROVIDER` | `none` | `none`, `openai`, or `elevenlabs` |
 | `SIDEKICK_TTS_MAX_CHARS` | `600` | Max text length accepted by `/sidekick/tts` |
 | `OPENAI_API_KEY` | empty | Required for `SIDEKICK_TTS_PROVIDER=openai` |

@@ -24,6 +24,83 @@ static OPERATE_RET sidekick_camera_preview_start_in_rect(uint16_t x, uint16_t y,
 #define SIDEKICK_GLYPH_HEIGHT           7
 #define SIDEKICK_END_LETTERS            3
 
+#if SIDEKICK_ENABLE_CAPTURE_SAVE
+#include <stdio.h>
+
+#include "tal_time_service.h"
+#include "tkl_fs.h"
+
+#define SIDEKICK_CAPTURE_PATH_MAX 192
+
+#if OPERATING_SYSTEM == SYSTEM_LINUX
+#define SIDEKICK_CAPTURE_SAVE_DIR "captures"
+#else
+#define SIDEKICK_CAPTURE_SAVE_DIR "/sdcard/sidekick/captures"
+#endif
+
+static bool     s_capture_dir_ready = false;
+static uint32_t s_capture_seq       = 0;
+
+static OPERATE_RET sidekick_camera_ensure_capture_dir(void)
+{
+    BOOL_T exists = FALSE;
+
+    if (s_capture_dir_ready) {
+        return OPRT_OK;
+    }
+
+    if ((tkl_fs_is_exist(SIDEKICK_CAPTURE_SAVE_DIR, &exists) == 0) && exists) {
+        s_capture_dir_ready = true;
+        return OPRT_OK;
+    }
+
+    if (tkl_fs_mkdir(SIDEKICK_CAPTURE_SAVE_DIR) != 0) {
+        return OPRT_COM_ERROR;
+    }
+
+    s_capture_dir_ready = true;
+    SIDEKICK_LOGI("camera", "capture save dir ready: %s", SIDEKICK_CAPTURE_SAVE_DIR);
+    return OPRT_OK;
+}
+
+static void sidekick_camera_save_jpeg_capture(const uint8_t *data, uint32_t len)
+{
+    char       path[SIDEKICK_CAPTURE_PATH_MAX];
+    TUYA_FILE  file_hdl  = NULL;
+    int        write_len = 0;
+    SYS_TICK_T now_ms    = 0;
+
+    if ((data == NULL) || (len == 0)) {
+        return;
+    }
+
+    if (sidekick_camera_ensure_capture_dir() != OPRT_OK) {
+        SIDEKICK_LOGW("camera", "capture save skipped; cannot use dir %s", SIDEKICK_CAPTURE_SAVE_DIR);
+        return;
+    }
+
+    now_ms = tal_time_get_posix_ms();
+    s_capture_seq++;
+    snprintf(path, sizeof(path), "%s/frame_%llu_%u.jpg", SIDEKICK_CAPTURE_SAVE_DIR, (unsigned long long)now_ms,
+             (unsigned int)s_capture_seq);
+
+    file_hdl = tkl_fopen(path, "wb");
+    if (file_hdl == NULL) {
+        SIDEKICK_LOGW("camera", "capture save open failed: %s", path);
+        return;
+    }
+
+    write_len = tkl_fwrite((void *)data, (int)len, file_hdl);
+    (void)tkl_fclose(file_hdl);
+    if (write_len != (int)len) {
+        SIDEKICK_LOGW("camera", "capture save write failed: %s wrote %d of %u", path, write_len, (unsigned int)len);
+        return;
+    }
+
+    SIDEKICK_LOGI("camera", "capture saved %s (%u bytes)", path, (unsigned int)len);
+}
+#endif /* SIDEKICK_ENABLE_CAPTURE_SAVE */
+
 typedef struct {
     uint8_t     *data;
     uint32_t     len;
@@ -481,6 +558,10 @@ OPERATE_RET sidekick_camera_capture_jpeg(uint8_t **image_data, uint32_t *image_d
     memcpy(*image_data, s_jpeg_capture.data, s_jpeg_capture.len);
     *image_data_len = s_jpeg_capture.len;
     tal_mutex_unlock(s_jpeg_capture.mutex);
+
+#if SIDEKICK_ENABLE_CAPTURE_SAVE
+    sidekick_camera_save_jpeg_capture(*image_data, *image_data_len);
+#endif
 
     return OPRT_OK;
 #else

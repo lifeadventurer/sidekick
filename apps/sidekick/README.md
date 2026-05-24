@@ -19,6 +19,23 @@ This app is the product scaffold. Keep hardware bring-up experiments in
 - Keep camera preview wired but disabled by default while the home screen owns
   the display.
 
+## Device Wi-Fi and backend (`.env.local`)
+
+The board does not read `.env` at runtime. Set network values in
+`apps/sidekick/.env.local` (gitignored); they are baked in when you build.
+
+```bash
+cd apps/sidekick
+cp .env.example .env.local
+# edit SIDEKICK_BACKEND_HOST, SIDEKICK_WIFI_SSID, SIDEKICK_WIFI_PSWD
+uv run python ../../tos.py build
+```
+
+Priority: defaults → `.env.example` → `.env` → `.env.local` → shell `export SIDEKICK_*`.
+
+`SIDEKICK_BACKEND_HOST` must be your Mac’s LAN IP (not `localhost`). The Go
+backend still uses `apps/sidekick/backend/.env.local` for Ollama/TTS.
+
 ## Build
 
 From the repository root:

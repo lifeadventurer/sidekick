@@ -25,7 +25,7 @@
 #define SIDEKICK_BACKEND_TAG          "backend"
 #define SIDEKICK_BACKEND_PATH_MAX     160
 #define SIDEKICK_BACKEND_MESSAGE_MAX  256
-#define SIDEKICK_BACKEND_THREAD_STACK (1024 * 6)
+#define SIDEKICK_BACKEND_THREAD_STACK (1024 * 8)
 
 typedef enum {
     SIDEKICK_BACKEND_REQ_NONE = 0,
@@ -237,6 +237,11 @@ static void sidekick_backend_worker(void *arg)
             continue;
         }
 
+        if (!s_backend.network_inited) {
+            SIDEKICK_LOGW(SIDEKICK_BACKEND_TAG, "network not initialized; skip backend request");
+            continue;
+        }
+
         if (!sidekick_backend_network_ready()) {
             SIDEKICK_LOGW(SIDEKICK_BACKEND_TAG, "network not ready; skip backend request");
             continue;
@@ -274,8 +279,6 @@ OPERATE_RET sidekick_backend_init(void)
         return OPRT_OK;
     }
 
-    TUYA_CALL_ERR_RETURN(sidekick_backend_network_init());
-
     if (s_backend.mutex == NULL) {
         TUYA_CALL_ERR_RETURN(tal_mutex_create_init(&s_backend.mutex));
     }
@@ -294,9 +297,23 @@ OPERATE_RET sidekick_backend_init(void)
             tal_thread_create_and_start(&s_backend.thread, NULL, NULL, sidekick_backend_worker, NULL, &cfg));
     }
 
-    SIDEKICK_LOGI(SIDEKICK_BACKEND_TAG, "backend ready host=%s port=%u", SIDEKICK_BACKEND_HOST,
+    SIDEKICK_LOGI(SIDEKICK_BACKEND_TAG, "backend ready host=%s port=%u (wifi on first upload)", SIDEKICK_BACKEND_HOST,
                   (unsigned int)SIDEKICK_BACKEND_PORT);
     return rt;
+}
+
+static void sidekick_backend_prepare_network(void)
+{
+    OPERATE_RET rt = OPRT_OK;
+
+    if (!sidekick_backend_enabled() || s_backend.network_inited) {
+        return;
+    }
+
+    rt = sidekick_backend_network_init();
+    if (rt != OPRT_OK) {
+        SIDEKICK_LOGW(SIDEKICK_BACKEND_TAG, "network init failed rt=%d", rt);
+    }
 }
 
 void sidekick_backend_request_frame(void)
@@ -304,6 +321,8 @@ void sidekick_backend_request_frame(void)
     if (!sidekick_backend_enabled()) {
         return;
     }
+
+    sidekick_backend_prepare_network();
     sidekick_backend_schedule(SIDEKICK_BACKEND_REQ_FRAME);
 }
 
@@ -312,5 +331,7 @@ void sidekick_backend_end_session(void)
     if (!sidekick_backend_enabled()) {
         return;
     }
+
+    sidekick_backend_prepare_network();
     sidekick_backend_schedule(SIDEKICK_BACKEND_REQ_SUMMARY);
 }

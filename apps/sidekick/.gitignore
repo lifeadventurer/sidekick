@@ -1,1 +1,6 @@
+.env
+.env.local
+include/sidekick_device_config.h
+
 backend/.env.local
+backend/captures/*

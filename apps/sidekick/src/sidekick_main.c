@@ -24,16 +24,24 @@ static void sidekick_user_main(void)
     SIDEKICK_LOGI("main", "platform=%s board=%s", PLATFORM_CHIP, PLATFORM_BOARD);
 
     TUYA_CALL_ERR_LOG(sidekick_hardware_init());
+    if (tal_kv_init(&(tal_kv_cfg_t){
+            .seed = "sidekick_seed_01",
+            .key  = "sidekick_key_01",
+        }) != 0) {
+        SIDEKICK_LOGW("main", "tal_kv_init failed");
+    }
     TUYA_CALL_ERR_LOG(tal_sw_timer_init());
     TUYA_CALL_ERR_LOG(tal_workq_init());
-    TUYA_CALL_ERR_LOG(sidekick_backend_init());
     TUYA_CALL_ERR_LOG(sidekick_session_init());
+    /* LCD and audio before Wi-Fi/LwIP — network init must not block the UI or chime. */
     TUYA_CALL_ERR_LOG(sidekick_ui_start());
     TUYA_CALL_ERR_LOG(sidekick_audio_input_start());
 
 #if SIDEKICK_ENABLE_STARTUP_CHIME
     TUYA_CALL_ERR_LOG(sidekick_audio_play_startup_chime());
 #endif
+
+    TUYA_CALL_ERR_LOG(sidekick_backend_init());
 
 #if SIDEKICK_ENABLE_CAMERA_PREVIEW
     TUYA_CALL_ERR_LOG(sidekick_camera_preview_start());
@@ -71,7 +79,7 @@ static void sidekick_thread_entry(void *arg)
 void tuya_app_main(void)
 {
     THREAD_CFG_T thread_cfg = {0};
-    thread_cfg.stackDepth   = 1024 * 6;
+    thread_cfg.stackDepth   = 1024 * 8;
     thread_cfg.priority     = THREAD_PRIO_1;
     thread_cfg.thrdname     = "sidekick";
     tal_thread_create_and_start(&s_sidekick_thread, NULL, NULL, sidekick_thread_entry, NULL, &thread_cfg);

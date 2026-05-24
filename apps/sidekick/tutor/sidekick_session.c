@@ -71,6 +71,11 @@ void sidekick_session_start(void)
         return;
     }
 
+    if (s_mode == SIDEKICK_TUTOR_MODE_SUMMARY) {
+        s_mode = SIDEKICK_TUTOR_MODE_HINT;
+        SIDEKICK_LOGI("tutor", "summary mode is for session end only; using hint");
+    }
+
     s_state      = SIDEKICK_SESSION_OBSERVING;
     s_tick_count = 0;
     SIDEKICK_LOGI("tutor", "session started mode=%s", sidekick_session_mode_name(s_mode));
@@ -82,7 +87,8 @@ void sidekick_session_end(void)
         return;
     }
 
-    s_state = SIDEKICK_SESSION_IDLE;
+    s_state      = SIDEKICK_SESSION_IDLE;
+    s_tick_count = 0;
     SIDEKICK_LOGI("tutor", "session ended");
     sidekick_backend_end_session();
 }

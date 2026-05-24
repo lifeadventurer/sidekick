@@ -6,25 +6,27 @@
 #include "sidekick_camera.h"
 #include "sidekick_log.h"
 #include "sidekick_session.h"
+#include "tal_time_service.h"
 
 #if defined(ENABLE_DISPLAY) && (ENABLE_DISPLAY == 1)
 #include "tdl_display_manage.h"
 
-#define SIDEKICK_COLOR_BG         sidekick_ui_color(0x10, 0x18, 0x28)
-#define SIDEKICK_COLOR_CARD       sidekick_ui_color(0x1D, 0x29, 0x39)
-#define SIDEKICK_COLOR_ACCENT     sidekick_ui_color(0x84, 0xCA, 0xFF)
-#define SIDEKICK_COLOR_DIM        sidekick_ui_color(0x47, 0x55, 0x67)
-#define SIDEKICK_COLOR_SELECTED   sidekick_ui_color(0xB7, 0xE4, 0xC7)
-#define SIDEKICK_WORDMARK_LETTERS 8
-#define SIDEKICK_KICK_LETTERS     4
-#define SIDEKICK_TEST_LETTERS     4
-#define SIDEKICK_END_LETTERS      3
-#define SIDEKICK_GLYPH_WIDTH      5
-#define SIDEKICK_GLYPH_SPACING    1
-#define SIDEKICK_GLYPH_HEIGHT     7
-#define SIDEKICK_LABEL_UNIT       4
-#define SIDEKICK_START_LETTERS    5
-#define SIDEKICK_MODE_COUNT       3
+#define SIDEKICK_COLOR_BG             sidekick_ui_color(0x10, 0x18, 0x28)
+#define SIDEKICK_COLOR_CARD           sidekick_ui_color(0x1D, 0x29, 0x39)
+#define SIDEKICK_COLOR_ACCENT         sidekick_ui_color(0x84, 0xCA, 0xFF)
+#define SIDEKICK_COLOR_DIM            sidekick_ui_color(0x47, 0x55, 0x67)
+#define SIDEKICK_COLOR_SELECTED       sidekick_ui_color(0xB7, 0xE4, 0xC7)
+#define SIDEKICK_WORDMARK_LETTERS     8
+#define SIDEKICK_KICK_LETTERS         4
+#define SIDEKICK_TEST_LETTERS         4
+#define SIDEKICK_END_LETTERS          3
+#define SIDEKICK_GLYPH_WIDTH          5
+#define SIDEKICK_GLYPH_SPACING        1
+#define SIDEKICK_GLYPH_HEIGHT         7
+#define SIDEKICK_LABEL_UNIT           4
+#define SIDEKICK_START_LETTERS        5
+#define SIDEKICK_MODE_COUNT           3
+#define SIDEKICK_SESSION_END_GRACE_MS 3000
 
 typedef enum {
     SIDEKICK_UI_SCREEN_HOME = 0,
@@ -738,9 +740,10 @@ static OPERATE_RET sidekick_ui_display_start(void)
 
 #define SIDEKICK_UI_MAX_TOUCH_POINTS 2
 
-static TDL_TP_HANDLE_T s_tp_handle   = NULL;
-static bool            s_touch_down  = false;
-static bool            s_touch_armed = false;
+static TDL_TP_HANDLE_T s_tp_handle              = NULL;
+static bool            s_touch_down             = false;
+static bool            s_touch_armed            = false;
+static SYS_TICK_T      s_session_end_allowed_ms = 0;
 #endif
 
 OPERATE_RET sidekick_ui_start(void)
@@ -883,6 +886,10 @@ void sidekick_ui_poll(void)
             sidekick_ui_kick_active_layout(&end_x, &end_y, &end_w, &end_h, &preview_x, &preview_y, &preview_w,
                                            &preview_h);
             if (sidekick_ui_point_in_rect(canvas_x, canvas_y, end_x, end_y, end_w, end_h)) {
+                if (tal_time_get_posix_ms() < s_session_end_allowed_ms) {
+                    SIDEKICK_LOGI("ui", "session end ignored (release finger and wait a moment)");
+                    return;
+                }
                 SIDEKICK_LOGI("ui", "session end");
                 TUYA_CALL_ERR_LOG(sidekick_camera_preview_stop());
                 sidekick_session_end();
@@ -905,6 +912,9 @@ void sidekick_ui_poll(void)
         if (sidekick_ui_point_in_rect(canvas_x, canvas_y, start_x, start_y, start_w, start_h)) {
             SIDEKICK_LOGI("ui", "session start");
             sidekick_session_start();
+            s_session_end_allowed_ms = tal_time_get_posix_ms() + SIDEKICK_SESSION_END_GRACE_MS;
+            s_touch_down             = false;
+            s_touch_armed            = false;
             TUYA_CALL_ERR_LOG(sidekick_ui_draw_screen());
             TUYA_CALL_ERR_LOG(sidekick_ui_start_session_preview());
             return;

@@ -6,7 +6,7 @@
 #include "tdl_audio_manage.h"
 
 #define SIDEKICK_CHIME_FRAME_SAMPLES 320
-#define SIDEKICK_CHIME_REPEAT_FRAMES 6
+#define SIDEKICK_CHIME_REPEAT_FRAMES 2
 
 static TDL_AUDIO_HANDLE_T s_audio_handle = NULL;
 static uint32_t           s_audio_frames = 0;
