@@ -541,9 +541,14 @@ static void sidekick_backend_schedule(SIDEKICK_BACKEND_REQ_E req)
     }
 
     tal_mutex_lock(s_backend.mutex);
-    if ((req == SIDEKICK_BACKEND_REQ_FRAME) && (s_backend.busy || (s_backend.pending != SIDEKICK_BACKEND_REQ_NONE))) {
+    if ((req == SIDEKICK_BACKEND_REQ_AUDIO) && (s_backend.busy || (s_backend.pending != SIDEKICK_BACKEND_REQ_NONE))) {
         tal_mutex_unlock(s_backend.mutex);
-        SIDEKICK_LOGI(SIDEKICK_BACKEND_TAG, "drop frame request; backend worker busy");
+        SIDEKICK_LOGI(SIDEKICK_BACKEND_TAG, "drop mic request; backend worker busy");
+        return;
+    }
+    if ((req == SIDEKICK_BACKEND_REQ_FRAME) && (s_backend.pending == SIDEKICK_BACKEND_REQ_SUMMARY)) {
+        tal_mutex_unlock(s_backend.mutex);
+        SIDEKICK_LOGI(SIDEKICK_BACKEND_TAG, "drop frame request; summary pending");
         return;
     }
     s_backend.pending = req;

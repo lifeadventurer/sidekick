@@ -271,6 +271,9 @@ func TestFrameIncludesLatestTranscript(t *testing.T) {
 	if parsed.Transcript != "Can you explain the next step?" {
 		t.Fatalf("expected transcript in response, got %q", parsed.Transcript)
 	}
+	if got := srv.latestTranscript("voice-session"); got != "" {
+		t.Fatalf("expected transcript to be consumed after frame, got %q", got)
+	}
 }
 
 func TestAudioFakeProviderStoresTranscript(t *testing.T) {
@@ -288,6 +291,21 @@ func TestAudioFakeProviderStoresTranscript(t *testing.T) {
 	}
 	if got := srv.latestTranscript("mic-session"); got != "Student asked for help." {
 		t.Fatalf("unexpected stored transcript %q", got)
+	}
+}
+
+func TestAudioTranscriptChunksAppendUntilFrameConsumesThem(t *testing.T) {
+	srv := testServer()
+	srv.recordTranscript("mic-session", "can you explain")
+	srv.recordTranscript("mic-session", "the next step")
+
+	if got := srv.latestTranscript("mic-session"); got != "can you explain the next step" {
+		t.Fatalf("unexpected accumulated transcript %q", got)
+	}
+
+	srv.recordTranscript("mic-session", "")
+	if got := srv.latestTranscript("mic-session"); got != "can you explain the next step" {
+		t.Fatalf("empty transcript should keep pending utterance, got %q", got)
 	}
 }
 

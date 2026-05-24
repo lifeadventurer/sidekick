@@ -177,7 +177,11 @@ Content-Type: audio/L16
 
 By default, the backend sends the raw PCM to ElevenLabs Scribe
 (`SIDEKICK_STT_PROVIDER=elevenlabs`), stores the transcript on the session, and
-attaches it to the next frame analysis. The alternate OpenAI provider wraps the
+attaches it to the next frame analysis. During an active device session, the
+firmware uploads microphone audio about every two seconds, and also immediately
+before each frame upload. Non-empty transcript chunks are appended into one
+pending utterance; silence keeps the pending utterance available until the next
+successful frame analysis consumes it. The alternate OpenAI provider wraps the
 same PCM bytes as WAV before transcription.
 
 ```json

@@ -99,9 +99,13 @@ func (s *server) recordFrame(sessionID string, frame frameContext) {
 }
 
 func (s *server) recordTranscript(sessionID string, transcript string) {
+	s.appendTranscript(sessionID, transcript)
+}
+
+func (s *server) appendTranscript(sessionID string, transcript string) string {
 	transcript = strings.TrimSpace(transcript)
 	if transcript == "" {
-		return
+		return s.latestTranscript(sessionID)
 	}
 
 	s.mu.Lock()
@@ -112,8 +116,13 @@ func (s *server) recordTranscript(sessionID string, transcript string) {
 		state = &sessionState{}
 		s.sessions[sessionID] = state
 	}
-	state.LatestTranscript = transcript
+	if state.LatestTranscript == "" {
+		state.LatestTranscript = transcript
+	} else {
+		state.LatestTranscript += " " + transcript
+	}
 	state.TranscriptAt = time.Now()
+	return state.LatestTranscript
 }
 
 func (s *server) latestTranscript(sessionID string) string {

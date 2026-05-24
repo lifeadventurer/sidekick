@@ -119,7 +119,10 @@ func (s *server) handleAudio(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadGateway, errorResponse{Error: err.Error()})
 		return
 	}
-	s.recordTranscript(sessionID, transcript)
+	pendingTranscript := s.appendTranscript(sessionID, transcript)
+	if s.cfg.Verbose {
+		logInfo("audio transcript", "session", sessionID, "provider", provider, "bytes", len(audio), "transcript", transcript, "pending", pendingTranscript)
+	}
 
 	writeJSON(w, http.StatusOK, map[string]any{
 		"session_id":     sessionID,

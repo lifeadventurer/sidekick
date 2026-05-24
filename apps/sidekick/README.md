@@ -14,7 +14,7 @@ This app is the product scaffold. Keep hardware bring-up experiments in
 - Show the SideKick home screen on the LCD.
 - Use touch on the home screen to cycle tutor modes:
   `Active -> Hint -> Summary`.
-- Open microphone input and count captured PCM frames.
+- Open microphone input and upload speech chunks during active sessions.
 - Play a short startup chime through the speaker.
 - Start in Hint Coach mode by default.
 - Keep tutor orchestration as a small state-machine placeholder.
