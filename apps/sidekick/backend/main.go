@@ -10,6 +10,7 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"net/url"
 	"os"
 	"strconv"
 	"strings"
@@ -25,6 +26,17 @@ const (
 	defaultMaxImageBytes = 4 * 1024 * 1024
 	defaultContextFrames = 3
 	defaultSessionID     = "default"
+	defaultTTSProvider   = "none"
+	defaultMaxTTSChars   = 600
+
+	defaultOpenAITTSURL    = "https://api.openai.com/v1/audio/speech"
+	defaultOpenAITTSModel  = "gpt-4o-mini-tts"
+	defaultOpenAITTSVoice  = "coral"
+	defaultOpenAITTSFormat = "wav"
+
+	defaultElevenLabsTTSURL       = "https://api.elevenlabs.io/v1/text-to-speech"
+	defaultElevenLabsTTSModel     = "eleven_flash_v2_5"
+	defaultElevenLabsOutputFormat = "mp3_44100_128"
 )
 
 type config struct {
@@ -39,6 +51,22 @@ type config struct {
 	ContextFrames    int
 	AllowMultipart   bool
 	DefaultImageMIME string
+	TTS              ttsConfig
+}
+
+type ttsConfig struct {
+	Provider               string
+	MaxChars               int
+	OpenAIAPIKey           string
+	OpenAIURL              string
+	OpenAIModel            string
+	OpenAIVoice            string
+	OpenAIFormat           string
+	ElevenLabsAPIKey       string
+	ElevenLabsURL          string
+	ElevenLabsVoiceID      string
+	ElevenLabsModel        string
+	ElevenLabsOutputFormat string
 }
 
 type server struct {
@@ -74,7 +102,15 @@ type errorResponse struct {
 	Error string `json:"error"`
 }
 
+type ttsRequest struct {
+	Text     string `json:"text"`
+	Provider string `json:"provider,omitempty"`
+	Voice    string `json:"voice,omitempty"`
+	Format   string `json:"format,omitempty"`
+}
+
 func main() {
+	loadLocalEnv()
 	cfg := loadConfig()
 	srv := newServer(cfg)
 
@@ -82,6 +118,7 @@ func main() {
 	mux.HandleFunc("GET /health", srv.handleHealth)
 	mux.HandleFunc("POST /sidekick/frame", srv.handleFrame)
 	mux.HandleFunc("POST /sidekick/session/end", srv.handleSessionEnd)
+	mux.HandleFunc("POST /sidekick/tts", srv.handleTTS)
 
 	addr := ":" + cfg.Port
 	log.Printf("SideKick backend listening on %s provider=%s model=%s", addr, cfg.Provider, cfg.OllamaModel)
@@ -103,7 +140,60 @@ func loadConfig() config {
 		ContextFrames:    int(getenvInt64("SIDEKICK_CONTEXT_FRAMES", defaultContextFrames)),
 		AllowMultipart:   getenv("SIDEKICK_ALLOW_MULTIPART", "1") != "0",
 		DefaultImageMIME: getenv("SIDEKICK_IMAGE_MIME", "image/jpeg"),
+		TTS: ttsConfig{
+			Provider:               strings.ToLower(getenv("SIDEKICK_TTS_PROVIDER", defaultTTSProvider)),
+			MaxChars:               int(getenvInt64("SIDEKICK_TTS_MAX_CHARS", defaultMaxTTSChars)),
+			OpenAIAPIKey:           os.Getenv("OPENAI_API_KEY"),
+			OpenAIURL:              getenv("OPENAI_TTS_URL", defaultOpenAITTSURL),
+			OpenAIModel:            getenv("OPENAI_TTS_MODEL", defaultOpenAITTSModel),
+			OpenAIVoice:            getenv("OPENAI_TTS_VOICE", defaultOpenAITTSVoice),
+			OpenAIFormat:           getenv("OPENAI_TTS_FORMAT", defaultOpenAITTSFormat),
+			ElevenLabsAPIKey:       os.Getenv("ELEVENLABS_API_KEY"),
+			ElevenLabsURL:          getenv("ELEVENLABS_TTS_URL", defaultElevenLabsTTSURL),
+			ElevenLabsVoiceID:      os.Getenv("ELEVENLABS_VOICE_ID"),
+			ElevenLabsModel:        getenv("ELEVENLABS_TTS_MODEL", defaultElevenLabsTTSModel),
+			ElevenLabsOutputFormat: getenv("ELEVENLABS_OUTPUT_FORMAT", defaultElevenLabsOutputFormat),
+		},
 	}
+}
+
+func loadLocalEnv() {
+	for _, path := range []string{".env.local", ".env"} {
+		if err := loadEnvFile(path); err != nil && !errors.Is(err, os.ErrNotExist) {
+			log.Printf("failed to load %s: %v", path, err)
+		}
+	}
+}
+
+func loadEnvFile(path string) error {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return err
+	}
+
+	lines := strings.Split(string(data), "\n")
+	for _, line := range lines {
+		line = strings.TrimSpace(line)
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		line = strings.TrimPrefix(line, "export ")
+
+		key, value, ok := strings.Cut(line, "=")
+		if !ok {
+			continue
+		}
+		key = strings.TrimSpace(key)
+		value = strings.TrimSpace(value)
+		if key == "" || os.Getenv(key) != "" {
+			continue
+		}
+		value = strings.Trim(value, "\"'")
+		if err := os.Setenv(key, value); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func newServer(cfg config) *server {
@@ -122,6 +212,7 @@ func (s *server) handleHealth(w http.ResponseWriter, r *http.Request) {
 		"provider": s.cfg.Provider,
 		"model":    s.cfg.OllamaModel,
 		"context":  s.cfg.ContextFrames,
+		"tts":      s.cfg.TTS.Provider,
 	})
 }
 
@@ -214,6 +305,49 @@ func (s *server) handleSessionEnd(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+func (s *server) handleTTS(w http.ResponseWriter, r *http.Request) {
+	if !s.authorized(r) {
+		writeJSON(w, http.StatusUnauthorized, errorResponse{Error: "unauthorized"})
+		return
+	}
+
+	var req ttsRequest
+	r.Body = http.MaxBytesReader(w, r.Body, int64(s.cfg.TTS.MaxChars*4+1024))
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeJSON(w, http.StatusBadRequest, errorResponse{Error: "invalid JSON body"})
+		return
+	}
+
+	text := strings.TrimSpace(req.Text)
+	if text == "" {
+		writeJSON(w, http.StatusBadRequest, errorResponse{Error: "text is required"})
+		return
+	}
+	if len([]rune(text)) > s.cfg.TTS.MaxChars {
+		writeJSON(w, http.StatusBadRequest, errorResponse{Error: fmt.Sprintf("text exceeds %d characters", s.cfg.TTS.MaxChars)})
+		return
+	}
+
+	provider := strings.ToLower(strings.TrimSpace(req.Provider))
+	if provider == "" {
+		provider = s.cfg.TTS.Provider
+	}
+
+	audio, contentType, format, err := s.synthesizeSpeech(r.Context(), provider, req)
+	if err != nil {
+		writeJSON(w, http.StatusBadGateway, errorResponse{Error: err.Error()})
+		return
+	}
+
+	w.Header().Set("Content-Type", contentType)
+	w.Header().Set("X-Sidekick-TTS-Provider", provider)
+	w.Header().Set("X-Sidekick-Audio-Format", format)
+	w.WriteHeader(http.StatusOK)
+	if _, err := w.Write(audio); err != nil {
+		log.Printf("failed to write TTS audio: %v", err)
+	}
+}
+
 func (s *server) authorized(r *http.Request) bool {
 	if s.cfg.SharedSecret == "" {
 		return true
@@ -253,6 +387,118 @@ func (s *server) readImage(r *http.Request) (io.ReadCloser, string, error) {
 	}
 
 	return r.Body, mimeType, nil
+}
+
+func (s *server) synthesizeSpeech(ctx context.Context, provider string, req ttsRequest) ([]byte, string, string, error) {
+	switch provider {
+	case "", "none":
+		return nil, "", "", errors.New("TTS provider is disabled; set SIDEKICK_TTS_PROVIDER=openai or elevenlabs")
+	case "openai":
+		return s.callOpenAITTS(ctx, req)
+	case "elevenlabs", "eleven":
+		return s.callElevenLabsTTS(ctx, req)
+	default:
+		return nil, "", "", fmt.Errorf("unsupported SIDEKICK_TTS_PROVIDER %q", provider)
+	}
+}
+
+func (s *server) callOpenAITTS(ctx context.Context, req ttsRequest) ([]byte, string, string, error) {
+	if s.cfg.TTS.OpenAIAPIKey == "" {
+		return nil, "", "", errors.New("OPENAI_API_KEY is required for OpenAI TTS")
+	}
+
+	voice := firstNonEmpty(req.Voice, s.cfg.TTS.OpenAIVoice)
+	format := firstNonEmpty(req.Format, s.cfg.TTS.OpenAIFormat)
+	body, err := json.Marshal(map[string]string{
+		"model":           s.cfg.TTS.OpenAIModel,
+		"input":           strings.TrimSpace(req.Text),
+		"voice":           voice,
+		"response_format": format,
+	})
+	if err != nil {
+		return nil, "", "", err
+	}
+
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, s.cfg.TTS.OpenAIURL, bytes.NewReader(body))
+	if err != nil {
+		return nil, "", "", err
+	}
+	httpReq.Header.Set("Authorization", "Bearer "+s.cfg.TTS.OpenAIAPIKey)
+	httpReq.Header.Set("Content-Type", "application/json")
+
+	audio, contentType, err := s.doAudioRequest(httpReq, "OpenAI TTS")
+	if err != nil {
+		return nil, "", "", err
+	}
+	if contentType == "" {
+		contentType = contentTypeForFormat(format)
+	}
+	return audio, contentType, format, nil
+}
+
+func (s *server) callElevenLabsTTS(ctx context.Context, req ttsRequest) ([]byte, string, string, error) {
+	if s.cfg.TTS.ElevenLabsAPIKey == "" {
+		return nil, "", "", errors.New("ELEVENLABS_API_KEY is required for ElevenLabs TTS")
+	}
+
+	voiceID := firstNonEmpty(req.Voice, s.cfg.TTS.ElevenLabsVoiceID)
+	if voiceID == "" {
+		return nil, "", "", errors.New("ELEVENLABS_VOICE_ID is required for ElevenLabs TTS")
+	}
+
+	outputFormat := firstNonEmpty(req.Format, s.cfg.TTS.ElevenLabsOutputFormat)
+	endpoint, err := url.JoinPath(s.cfg.TTS.ElevenLabsURL, voiceID)
+	if err != nil {
+		return nil, "", "", err
+	}
+	endpointURL, err := url.Parse(endpoint)
+	if err != nil {
+		return nil, "", "", err
+	}
+	values := endpointURL.Query()
+	values.Set("output_format", outputFormat)
+	endpointURL.RawQuery = values.Encode()
+
+	body, err := json.Marshal(map[string]any{
+		"text":     strings.TrimSpace(req.Text),
+		"model_id": s.cfg.TTS.ElevenLabsModel,
+	})
+	if err != nil {
+		return nil, "", "", err
+	}
+
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, endpointURL.String(), bytes.NewReader(body))
+	if err != nil {
+		return nil, "", "", err
+	}
+	httpReq.Header.Set("Content-Type", "application/json")
+	httpReq.Header.Set("xi-api-key", s.cfg.TTS.ElevenLabsAPIKey)
+
+	audio, contentType, err := s.doAudioRequest(httpReq, "ElevenLabs TTS")
+	if err != nil {
+		return nil, "", "", err
+	}
+	if contentType == "" {
+		contentType = contentTypeForFormat(outputFormat)
+	}
+	return audio, contentType, outputFormat, nil
+}
+
+func (s *server) doAudioRequest(req *http.Request, label string) ([]byte, string, error) {
+	resp, err := s.client.Do(req)
+	if err != nil {
+		return nil, "", err
+	}
+	defer resp.Body.Close()
+
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 16*1024*1024))
+	if err != nil {
+		return nil, "", err
+	}
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return nil, "", fmt.Errorf("%s returned HTTP %d: %s", label, resp.StatusCode, string(body))
+	}
+	return body, resp.Header.Get("Content-Type"), nil
 }
 
 func (s *server) analyze(ctx context.Context, mode string, image []byte, priorFrames []frameContext, summary bool) (string, bool, string, error) {
@@ -528,4 +774,32 @@ func getenvInt64(name string, fallback int64) int64 {
 		return fallback
 	}
 	return parsed
+}
+
+func firstNonEmpty(values ...string) string {
+	for _, value := range values {
+		value = strings.TrimSpace(value)
+		if value != "" {
+			return value
+		}
+	}
+	return ""
+}
+
+func contentTypeForFormat(format string) string {
+	format = strings.ToLower(format)
+	switch {
+	case strings.Contains(format, "wav"):
+		return "audio/wav"
+	case strings.Contains(format, "pcm"):
+		return "audio/L16"
+	case strings.Contains(format, "opus"):
+		return "audio/opus"
+	case strings.Contains(format, "aac"):
+		return "audio/aac"
+	case strings.Contains(format, "flac"):
+		return "audio/flac"
+	default:
+		return "audio/mpeg"
+	}
 }

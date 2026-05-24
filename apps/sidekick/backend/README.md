@@ -45,6 +45,23 @@ cd apps/sidekick/backend
 SIDEKICK_AI_PROVIDER=fake go run .
 ```
 
+## Local Env
+
+The backend automatically loads `.env.local` and then `.env` from this directory.
+Shell environment variables win over file values. Keep `.env.local` uncommitted.
+
+```bash
+cp .env.example .env.local
+```
+
+Example `.env.local`:
+
+```text
+SIDEKICK_TTS_PROVIDER=elevenlabs
+ELEVENLABS_API_KEY=your_api_key_here
+ELEVENLABS_VOICE_ID=your_voice_id_here
+```
+
 Optional environment variables:
 
 | Name | Default | Description |
@@ -58,6 +75,16 @@ Optional environment variables:
 | `SIDEKICK_TIMEOUT_SECONDS` | `120` | Upstream Ollama request timeout |
 | `SIDEKICK_MAX_OUTPUT_TOKENS` | `240` | Max tutor response tokens |
 | `SIDEKICK_CONTEXT_FRAMES` | `3` | Sliding window of recent frames retained per session |
+| `SIDEKICK_TTS_PROVIDER` | `none` | `none`, `openai`, or `elevenlabs` |
+| `SIDEKICK_TTS_MAX_CHARS` | `600` | Max text length accepted by `/sidekick/tts` |
+| `OPENAI_API_KEY` | empty | Required for `SIDEKICK_TTS_PROVIDER=openai` |
+| `OPENAI_TTS_MODEL` | `gpt-4o-mini-tts` | OpenAI speech model |
+| `OPENAI_TTS_VOICE` | `coral` | Default OpenAI voice |
+| `OPENAI_TTS_FORMAT` | `wav` | Default OpenAI output format |
+| `ELEVENLABS_API_KEY` | empty | Required for `SIDEKICK_TTS_PROVIDER=elevenlabs` |
+| `ELEVENLABS_VOICE_ID` | empty | Required ElevenLabs voice ID |
+| `ELEVENLABS_TTS_MODEL` | `eleven_flash_v2_5` | ElevenLabs speech model |
+| `ELEVENLABS_OUTPUT_FORMAT` | `mp3_44100_128` | ElevenLabs output format |
 
 If `SIDEKICK_SHARED_SECRET` is set, the firmware must send either:
 
@@ -128,3 +155,56 @@ POST /sidekick/session/end?session=<id>
 
 This generates a summary from the retained session frames, returns a final
 `summary` response, and clears the in-memory session context.
+
+## Text To Speech
+
+TTS is separate from image analysis. The device should call it only when a frame
+or summary response has `should_respond: true` and a non-empty `message`.
+
+OpenAI TTS:
+
+```bash
+cd apps/sidekick/backend
+OPENAI_API_KEY='sk-...' SIDEKICK_TTS_PROVIDER=openai go run .
+```
+
+ElevenLabs TTS:
+
+```bash
+cd apps/sidekick/backend
+ELEVENLABS_API_KEY='...' ELEVENLABS_VOICE_ID='...' SIDEKICK_TTS_PROVIDER=elevenlabs go run .
+```
+
+TTS request:
+
+```http
+POST /sidekick/tts
+Content-Type: application/json
+
+{
+  "text": "Check the first visible step before simplifying."
+}
+```
+
+The response body is raw audio. Useful headers:
+
+```text
+Content-Type: audio/wav
+X-Sidekick-TTS-Provider: openai
+X-Sidekick-Audio-Format: wav
+```
+
+Per-request overrides are supported:
+
+```json
+{
+  "text": "Try the next step.",
+  "provider": "elevenlabs",
+  "voice": "VOICE_ID",
+  "format": "mp3_44100_128"
+}
+```
+
+For embedded playback, OpenAI `wav` or `pcm` is usually easier than MP3 because
+the device avoids MP3 decoding. ElevenLabs defaults to MP3 unless
+`ELEVENLABS_OUTPUT_FORMAT` or the request `format` is changed.
