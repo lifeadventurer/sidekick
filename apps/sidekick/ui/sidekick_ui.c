@@ -1,3 +1,10 @@
+/**
+ * @file sidekick_ui.c
+ * @brief SideKick display and touch UI.
+ *
+ * @copyright Copyright (c) 2026 SideKick Contributors. All Rights Reserved.
+ *
+ */
 #include "sidekick_ui.h"
 
 #include <string.h>
@@ -391,6 +398,42 @@ static void sidekick_ui_draw_camera_icon(uint16_t x, uint16_t y, uint16_t size, 
     TUYA_CALL_ERR_LOG(sidekick_ui_fill_rect(x + unit * 4, y + unit * 5, unit * 2, unit * 2, color));
 }
 
+static void sidekick_ui_settings_button_layout(uint16_t *settings_x, uint16_t *settings_y, uint16_t *settings_size)
+{
+    sidekick_ui_home_button_layout(settings_x, settings_y, settings_size);
+    *settings_x = s_canvas_width - *settings_x - *settings_size;
+}
+
+static void sidekick_ui_draw_settings_icon(uint16_t x, uint16_t y, uint16_t size, uint32_t color)
+{
+    OPERATE_RET rt     = OPRT_OK;
+    uint16_t    unit   = size / 12;
+    uint32_t    cutout = SIDEKICK_COLOR_CARD;
+    uint16_t    icon_x;
+    uint16_t    icon_y;
+
+    if (unit == 0) {
+        unit = 1;
+    }
+
+    icon_x = x + ((size > unit * 12) ? ((size - unit * 12) / 2) : 0);
+    icon_y = y + ((size > unit * 12) ? ((size - unit * 12) / 2) : 0);
+
+    TUYA_CALL_ERR_LOG(sidekick_ui_fill_rect(icon_x + unit * 5, icon_y + unit, unit * 2, unit * 2, color));
+    TUYA_CALL_ERR_LOG(sidekick_ui_fill_rect(icon_x + unit * 5, icon_y + unit * 9, unit * 2, unit * 2, color));
+    TUYA_CALL_ERR_LOG(sidekick_ui_fill_rect(icon_x + unit, icon_y + unit * 5, unit * 2, unit * 2, color));
+    TUYA_CALL_ERR_LOG(sidekick_ui_fill_rect(icon_x + unit * 9, icon_y + unit * 5, unit * 2, unit * 2, color));
+
+    TUYA_CALL_ERR_LOG(sidekick_ui_fill_rect(icon_x + unit * 2, icon_y + unit * 2, unit * 3, unit * 3, color));
+    TUYA_CALL_ERR_LOG(sidekick_ui_fill_rect(icon_x + unit * 7, icon_y + unit * 2, unit * 3, unit * 3, color));
+    TUYA_CALL_ERR_LOG(sidekick_ui_fill_rect(icon_x + unit * 2, icon_y + unit * 7, unit * 3, unit * 3, color));
+    TUYA_CALL_ERR_LOG(sidekick_ui_fill_rect(icon_x + unit * 7, icon_y + unit * 7, unit * 3, unit * 3, color));
+
+    TUYA_CALL_ERR_LOG(sidekick_ui_fill_rect(icon_x + unit * 3, icon_y + unit * 4, unit * 6, unit * 4, color));
+    TUYA_CALL_ERR_LOG(sidekick_ui_fill_rect(icon_x + unit * 4, icon_y + unit * 3, unit * 4, unit * 6, color));
+    TUYA_CALL_ERR_LOG(sidekick_ui_fill_rect(icon_x + unit * 5, icon_y + unit * 5, unit * 2, unit * 2, cutout));
+}
+
 static void sidekick_ui_draw_centered_text(const char *text, uint16_t letter_count, uint16_t rect_x, uint16_t rect_y,
                                            uint16_t rect_w, uint16_t rect_h, uint16_t unit, uint32_t color)
 {
@@ -599,6 +642,9 @@ static OPERATE_RET sidekick_ui_draw_kick_screen(void)
     uint16_t    home_x;
     uint16_t    home_y;
     uint16_t    home_size;
+    uint16_t    settings_x;
+    uint16_t    settings_y;
+    uint16_t    settings_size;
     uint16_t    start_x;
     uint16_t    start_y;
     uint16_t    start_w;
@@ -615,11 +661,16 @@ static OPERATE_RET sidekick_ui_draw_kick_screen(void)
 
     sidekick_ui_kick_layout(&home_x, &home_y, &home_size, &start_x, &start_y, &start_w, &start_h, &mode_x, &mode_y,
                             &mode_w, &mode_h, &mode_gap);
+    sidekick_ui_settings_button_layout(&settings_x, &settings_y, &settings_size);
 
     sidekick_ui_clear_screen();
     TUYA_CALL_ERR_RETURN(sidekick_ui_fill_rect(home_x, home_y, home_size, home_size, SIDEKICK_COLOR_CARD));
     sidekick_ui_draw_home_icon(home_x + home_size / 8, home_y + home_size / 8, home_size * 3 / 4,
                                SIDEKICK_COLOR_ACCENT);
+    TUYA_CALL_ERR_RETURN(
+        sidekick_ui_fill_rect(settings_x, settings_y, settings_size, settings_size, SIDEKICK_COLOR_CARD));
+    sidekick_ui_draw_settings_icon(settings_x + settings_size / 8, settings_y + settings_size / 8,
+                                   settings_size * 3 / 4, SIDEKICK_COLOR_ACCENT);
 
     TUYA_CALL_ERR_RETURN(sidekick_ui_fill_rect(start_x, start_y, start_w, start_h, SIDEKICK_COLOR_SELECTED));
     sidekick_ui_draw_label_in_rect("START", start_x, start_y, start_w, start_h, SIDEKICK_COLOR_BG);
@@ -866,6 +917,9 @@ void sidekick_ui_poll(void)
         uint16_t start_y;
         uint16_t start_w;
         uint16_t start_h;
+        uint16_t settings_x;
+        uint16_t settings_y;
+        uint16_t settings_size;
         uint16_t mode_x;
         uint16_t mode_y;
         uint16_t mode_w;
@@ -901,11 +955,17 @@ void sidekick_ui_poll(void)
 
         sidekick_ui_kick_layout(&home_x, &home_y, &home_size, &start_x, &start_y, &start_w, &start_h, &mode_x, &mode_y,
                                 &mode_w, &mode_h, &mode_gap);
+        sidekick_ui_settings_button_layout(&settings_x, &settings_y, &settings_size);
 
         if (sidekick_ui_point_in_rect(canvas_x, canvas_y, home_x, home_y, home_size, home_size)) {
             SIDEKICK_LOGI("ui", "home");
             s_screen = SIDEKICK_UI_SCREEN_HOME;
             TUYA_CALL_ERR_LOG(sidekick_ui_draw_screen());
+            return;
+        }
+
+        if (sidekick_ui_point_in_rect(canvas_x, canvas_y, settings_x, settings_y, settings_size, settings_size)) {
+            SIDEKICK_LOGI("ui", "settings");
             return;
         }
 
