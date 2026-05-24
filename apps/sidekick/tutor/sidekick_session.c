@@ -1,3 +1,10 @@
+/**
+ * @file sidekick_session.c
+ * @brief SideKick tutoring session state and capture cadence.
+ *
+ * @copyright Copyright (c) 2026 Tuya Inc. All Rights Reserved.
+ *
+ */
 #include "sidekick_session.h"
 
 #include "sidekick_audio.h"
@@ -76,8 +83,12 @@ void sidekick_session_start(void)
         SIDEKICK_LOGI("tutor", "summary mode is for session end only; using hint");
     }
 
-    s_state      = SIDEKICK_SESSION_OBSERVING;
-    s_tick_count = 0;
+    s_state = SIDEKICK_SESSION_OBSERVING;
+    if (SIDEKICK_FRAME_UPLOAD_INTERVAL_SEC > 1) {
+        s_tick_count = SIDEKICK_FRAME_UPLOAD_INTERVAL_SEC - 1;
+    } else {
+        s_tick_count = 0;
+    }
     SIDEKICK_LOGI("tutor", "session started mode=%s", sidekick_session_mode_name(s_mode));
 }
 

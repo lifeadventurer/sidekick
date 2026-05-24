@@ -65,7 +65,7 @@ Priority: defaults → `.env.example` → `.env` → `.env.local` → shell `exp
 ### 3. Backend (laptop)
 
 ```bash
-ollama pull gemma4:26b
+ollama pull llama3.2-vision:11b
 cd apps/sidekick/backend
 cp .env.example .env.local   # optional: TTS keys
 go run .

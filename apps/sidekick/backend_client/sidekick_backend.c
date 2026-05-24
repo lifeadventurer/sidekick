@@ -1,3 +1,10 @@
+/**
+ * @file sidekick_backend.c
+ * @brief SideKick firmware backend upload client.
+ *
+ * @copyright Copyright (c) 2026 Tuya Inc. All Rights Reserved.
+ *
+ */
 #include "sidekick_backend.h"
 
 #include <stdio.h>
@@ -43,6 +50,7 @@ typedef struct {
 } SIDEKICK_BACKEND_STATE_T;
 
 static SIDEKICK_BACKEND_STATE_T s_backend;
+static bool                     s_backend_disabled_warned = false;
 
 static bool sidekick_backend_enabled(void)
 {
@@ -178,7 +186,22 @@ static OPERATE_RET sidekick_backend_upload_frame(void)
     snprintf(path, sizeof(path), "/sidekick/frame?mode=%s&session=%s", mode, SIDEKICK_BACKEND_SESSION_ID);
 
     TUYA_CALL_ERR_GOTO(sidekick_camera_capture_jpeg(&jpeg, &jpeg_len), done);
-    SIDEKICK_LOGI(SIDEKICK_BACKEND_TAG, "upload jpeg len=%u mode=%s", (unsigned int)jpeg_len, mode);
+    SIDEKICK_LOGI(SIDEKICK_BACKEND_TAG, "captured jpeg len=%u mode=%s", (unsigned int)jpeg_len, mode);
+
+    if (!sidekick_backend_enabled()) {
+        SIDEKICK_LOGW(SIDEKICK_BACKEND_TAG, "backend disabled; captured frame locally only");
+        goto done;
+    }
+
+    if (!s_backend.network_inited) {
+        SIDEKICK_LOGW(SIDEKICK_BACKEND_TAG, "network not initialized; captured frame locally only");
+        goto done;
+    }
+
+    if (!sidekick_backend_network_ready()) {
+        SIDEKICK_LOGW(SIDEKICK_BACKEND_TAG, "network not ready; captured frame locally only");
+        goto done;
+    }
 
     rt = sidekick_backend_post(path, jpeg, jpeg_len, &response);
     if (rt == OPRT_OK) {
@@ -237,19 +260,19 @@ static void sidekick_backend_worker(void *arg)
             continue;
         }
 
-        if (!s_backend.network_inited) {
-            SIDEKICK_LOGW(SIDEKICK_BACKEND_TAG, "network not initialized; skip backend request");
-            continue;
-        }
-
-        if (!sidekick_backend_network_ready()) {
-            SIDEKICK_LOGW(SIDEKICK_BACKEND_TAG, "network not ready; skip backend request");
-            continue;
-        }
-
         if (req == SIDEKICK_BACKEND_REQ_FRAME) {
             TUYA_CALL_ERR_LOG(sidekick_backend_upload_frame());
         } else if (req == SIDEKICK_BACKEND_REQ_SUMMARY) {
+            if (!s_backend.network_inited) {
+                SIDEKICK_LOGW(SIDEKICK_BACKEND_TAG, "network not initialized; skip summary request");
+                continue;
+            }
+
+            if (!sidekick_backend_network_ready()) {
+                SIDEKICK_LOGW(SIDEKICK_BACKEND_TAG, "network not ready; skip summary request");
+                continue;
+            }
+
             TUYA_CALL_ERR_LOG(sidekick_backend_request_summary());
         }
     }
@@ -274,11 +297,6 @@ OPERATE_RET sidekick_backend_init(void)
 {
     OPERATE_RET rt = OPRT_OK;
 
-    if (!sidekick_backend_enabled()) {
-        SIDEKICK_LOGW(SIDEKICK_BACKEND_TAG, "backend disabled; set SIDEKICK_BACKEND_HOST");
-        return OPRT_OK;
-    }
-
     if (s_backend.mutex == NULL) {
         TUYA_CALL_ERR_RETURN(tal_mutex_create_init(&s_backend.mutex));
     }
@@ -297,8 +315,12 @@ OPERATE_RET sidekick_backend_init(void)
             tal_thread_create_and_start(&s_backend.thread, NULL, NULL, sidekick_backend_worker, NULL, &cfg));
     }
 
-    SIDEKICK_LOGI(SIDEKICK_BACKEND_TAG, "backend ready host=%s port=%u (wifi on first upload)", SIDEKICK_BACKEND_HOST,
-                  (unsigned int)SIDEKICK_BACKEND_PORT);
+    if (sidekick_backend_enabled()) {
+        SIDEKICK_LOGI(SIDEKICK_BACKEND_TAG, "backend ready host=%s port=%u (wifi on first upload)",
+                      SIDEKICK_BACKEND_HOST, (unsigned int)SIDEKICK_BACKEND_PORT);
+    } else {
+        SIDEKICK_LOGW(SIDEKICK_BACKEND_TAG, "backend host empty; frame capture will run without upload");
+    }
     return rt;
 }
 
@@ -319,10 +341,14 @@ static void sidekick_backend_prepare_network(void)
 void sidekick_backend_request_frame(void)
 {
     if (!sidekick_backend_enabled()) {
-        return;
+        if (!s_backend_disabled_warned) {
+            SIDEKICK_LOGW(SIDEKICK_BACKEND_TAG, "capture frame without upload; set SIDEKICK_BACKEND_HOST and rebuild");
+            s_backend_disabled_warned = true;
+        }
+    } else {
+        sidekick_backend_prepare_network();
     }
 
-    sidekick_backend_prepare_network();
     sidekick_backend_schedule(SIDEKICK_BACKEND_REQ_FRAME);
 }
 

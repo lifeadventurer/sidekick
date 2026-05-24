@@ -8,10 +8,10 @@ and returns compact JSON for the device UI.
 
 ## Run
 
-Ollama mode, using your local `gemma4:26b`:
+Ollama mode, using your local `llama3.2-vision:11b`:
 
 ```bash
-ollama pull gemma4:26b
+ollama pull llama3.2-vision:11b
 cd apps/sidekick/backend
 go run .
 ```
@@ -28,6 +28,10 @@ From another terminal:
 curl -s http://localhost:8787/health
 curl -s -X POST --data-binary @frame.jpg -H 'Content-Type: image/jpeg' 'http://localhost:8787/sidekick/frame?mode=hint&session=demo'
 ```
+
+For the hackathon demo, prefer `llama3.2-vision:11b` over local thinking-heavy
+models. Some thinking models can spend the whole token budget in `thinking` and
+return an empty `message.content`, which the backend treats as a failed analysis.
 
 When calling from the board, use the laptop LAN IP instead of `localhost`, for
 example:
@@ -68,13 +72,14 @@ Optional environment variables:
 | --- | --- | --- |
 | `PORT` | `8787` | HTTP listen port |
 | `SIDEKICK_AI_PROVIDER` | `ollama` | `ollama` or `fake` |
-| `OLLAMA_MODEL` | `gemma4:26b` | Local Ollama vision model |
+| `OLLAMA_MODEL` | `llama3.2-vision:11b` | Local Ollama vision model |
 | `OLLAMA_CHAT_URL` | `http://localhost:11434/api/chat` | Ollama chat endpoint |
 | `SIDEKICK_MAX_IMAGE_BYTES` | `4194304` | Max uploaded image size |
 | `SIDEKICK_SHARED_SECRET` | empty | Optional bearer token required from firmware |
-| `SIDEKICK_TIMEOUT_SECONDS` | `120` | Upstream Ollama request timeout |
-| `SIDEKICK_MAX_OUTPUT_TOKENS` | `240` | Max tutor response tokens |
-| `SIDEKICK_CONTEXT_FRAMES` | `3` | Sliding window of recent frames retained per session |
+| `SIDEKICK_TIMEOUT_SECONDS` | `25` | Upstream Ollama request timeout |
+| `SIDEKICK_MAX_OUTPUT_TOKENS` | `80` | Max tutor response tokens |
+| `SIDEKICK_CONTEXT_FRAMES` | `1` | Sliding window of recent frames retained per session |
+| `SIDEKICK_AI_FALLBACK` | `1` | Return demo-safe fallback JSON instead of HTTP 502 when Ollama fails (`0` disables) |
 | `SIDEKICK_CAPTURE_DIR` | `captures` | Directory for incoming JPEG debug dumps (`off` to disable) |
 | `SIDEKICK_TTS_PROVIDER` | `none` | `none`, `openai`, or `elevenlabs` |
 | `SIDEKICK_TTS_MAX_CHARS` | `600` | Max text length accepted by `/sidekick/tts` |

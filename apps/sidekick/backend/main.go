@@ -20,16 +20,18 @@ import (
 )
 
 const (
-	defaultPort          = "8787"
-	defaultProvider      = "ollama"
-	defaultOllamaModel   = "gemma4:26b"
-	defaultOllamaChatURL = "http://localhost:11434/api/chat"
-	defaultMaxImageBytes = 4 * 1024 * 1024
-	defaultContextFrames = 3
-	defaultSessionID     = "default"
-	defaultTTSProvider   = "none"
-	defaultMaxTTSChars   = 600
-	defaultCaptureDir    = "captures"
+	defaultPort            = "8787"
+	defaultProvider        = "ollama"
+	defaultOllamaModel     = "llama3.2-vision:11b"
+	defaultOllamaChatURL   = "http://localhost:11434/api/chat"
+	defaultMaxImageBytes   = 4 * 1024 * 1024
+	defaultMaxOutputTokens = 80
+	defaultContextFrames   = 1
+	defaultRequestTimeout  = 25
+	defaultSessionID       = "default"
+	defaultTTSProvider     = "none"
+	defaultMaxTTSChars     = 600
+	defaultCaptureDir      = "captures"
 
 	defaultOpenAITTSURL    = "https://api.openai.com/v1/audio/speech"
 	defaultOpenAITTSModel  = "gpt-4o-mini-tts"
@@ -42,19 +44,20 @@ const (
 )
 
 type config struct {
-	Port             string
-	Provider         string
-	OllamaModel      string
-	OllamaChatURL    string
-	MaxImageBytes    int64
-	SharedSecret     string
-	RequestTimeout   time.Duration
-	MaxOutputTokens  int
-	ContextFrames    int
-	AllowMultipart   bool
-	DefaultImageMIME string
-	CaptureDir       string
-	TTS              ttsConfig
+	Port              string
+	Provider          string
+	OllamaModel       string
+	OllamaChatURL     string
+	MaxImageBytes     int64
+	SharedSecret      string
+	RequestTimeout    time.Duration
+	MaxOutputTokens   int
+	ContextFrames     int
+	FallbackOnAIError bool
+	AllowMultipart    bool
+	DefaultImageMIME  string
+	CaptureDir        string
+	TTS               ttsConfig
 }
 
 type ttsConfig struct {
@@ -132,18 +135,19 @@ func loadConfig() config {
 	provider := getenv("SIDEKICK_AI_PROVIDER", defaultProvider)
 
 	return config{
-		Port:             getenv("PORT", defaultPort),
-		Provider:         strings.ToLower(provider),
-		OllamaModel:      getenv("OLLAMA_MODEL", defaultOllamaModel),
-		OllamaChatURL:    getenv("OLLAMA_CHAT_URL", defaultOllamaChatURL),
-		MaxImageBytes:    getenvInt64("SIDEKICK_MAX_IMAGE_BYTES", defaultMaxImageBytes),
-		SharedSecret:     os.Getenv("SIDEKICK_SHARED_SECRET"),
-		RequestTimeout:   time.Duration(getenvInt64("SIDEKICK_TIMEOUT_SECONDS", 120)) * time.Second,
-		MaxOutputTokens:  int(getenvInt64("SIDEKICK_MAX_OUTPUT_TOKENS", 240)),
-		ContextFrames:    int(getenvInt64("SIDEKICK_CONTEXT_FRAMES", defaultContextFrames)),
-		AllowMultipart:   getenv("SIDEKICK_ALLOW_MULTIPART", "1") != "0",
-		DefaultImageMIME: getenv("SIDEKICK_IMAGE_MIME", "image/jpeg"),
-		CaptureDir:       loadCaptureDir(),
+		Port:              getenv("PORT", defaultPort),
+		Provider:          strings.ToLower(provider),
+		OllamaModel:       getenv("OLLAMA_MODEL", defaultOllamaModel),
+		OllamaChatURL:     getenv("OLLAMA_CHAT_URL", defaultOllamaChatURL),
+		MaxImageBytes:     getenvInt64("SIDEKICK_MAX_IMAGE_BYTES", defaultMaxImageBytes),
+		SharedSecret:      os.Getenv("SIDEKICK_SHARED_SECRET"),
+		RequestTimeout:    time.Duration(getenvInt64("SIDEKICK_TIMEOUT_SECONDS", defaultRequestTimeout)) * time.Second,
+		MaxOutputTokens:   int(getenvInt64("SIDEKICK_MAX_OUTPUT_TOKENS", defaultMaxOutputTokens)),
+		ContextFrames:     int(getenvInt64("SIDEKICK_CONTEXT_FRAMES", defaultContextFrames)),
+		FallbackOnAIError: getenv("SIDEKICK_AI_FALLBACK", "1") != "0",
+		AllowMultipart:    getenv("SIDEKICK_ALLOW_MULTIPART", "1") != "0",
+		DefaultImageMIME:  getenv("SIDEKICK_IMAGE_MIME", "image/jpeg"),
+		CaptureDir:        loadCaptureDir(),
 		TTS: ttsConfig{
 			Provider:               strings.ToLower(getenv("SIDEKICK_TTS_PROVIDER", defaultTTSProvider)),
 			MaxChars:               int(getenvInt64("SIDEKICK_TTS_MAX_CHARS", defaultMaxTTSChars)),
@@ -513,6 +517,13 @@ func (s *server) analyze(ctx context.Context, mode string, image []byte, priorFr
 	case "ollama":
 		message, err := s.callOllama(ctx, mode, image, priorFrames, summary)
 		if err != nil {
+			if s.cfg.FallbackOnAIError {
+				log.Printf("ollama unavailable; returning fallback response: %v", err)
+				if summary {
+					return fakeMessage(mode, true), true, "ollama-fallback", nil
+				}
+				return "", false, "ollama-fallback", nil
+			}
 			return "", false, "ollama", err
 		}
 		message, shouldRespond := parseModelDecision(message)
@@ -525,12 +536,14 @@ func (s *server) analyze(ctx context.Context, mode string, image []byte, priorFr
 	}
 }
 
-func (s *server) callOllama(ctx context.Context, mode string, image []byte, priorFrames []frameContext, summary bool) (string, error) {
+func (s *server) callOllama(_ context.Context, mode string, image []byte, priorFrames []frameContext, summary bool) (string, error) {
 	messages := []ollamaMessage{{
 		Role:    "system",
 		Content: tutorSystemPrompt(mode, summary),
 	}}
 
+	imageCount := 0
+	imageBytes := len(image)
 	for idx, frame := range priorFrames {
 		content := fmt.Sprintf("Previous frame %d of %d. Mode=%s. Time=%s. Previous tutor message=%q. Compare this with later frames.",
 			idx+1, len(priorFrames), frame.Mode, frame.ObservedAt.Format(time.RFC3339), frame.Message)
@@ -539,6 +552,8 @@ func (s *server) callOllama(ctx context.Context, mode string, image []byte, prio
 			Content: content,
 			Images:  []string{base64.StdEncoding.EncodeToString(frame.Image)},
 		})
+		imageCount++
+		imageBytes += len(frame.Image)
 	}
 
 	if image != nil {
@@ -547,6 +562,7 @@ func (s *server) callOllama(ctx context.Context, mode string, image []byte, prio
 			Content: "Current frame. Compare it with the previous frames, infer progress or lack of motion, and respond with only the tutor message or NO_ACTION.",
 			Images:  []string{base64.StdEncoding.EncodeToString(image)},
 		})
+		imageCount++
 	} else {
 		messages = append(messages, ollamaMessage{
 			Role:    "user",
@@ -570,7 +586,15 @@ func (s *server) callOllama(ctx context.Context, mode string, image []byte, prio
 		return "", err
 	}
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, s.cfg.OllamaChatURL, bytes.NewReader(body))
+	// Keep the upstream model call diagnostic even if the board HTTP client gives up.
+	ollamaCtx, cancel := context.WithTimeout(context.Background(), s.cfg.RequestTimeout)
+	defer cancel()
+
+	log.Printf("ollama request model=%s mode=%s summary=%t images=%d image_bytes=%d payload_bytes=%d",
+		s.cfg.OllamaModel, mode, summary, imageCount, imageBytes, len(body))
+
+	start := time.Now()
+	req, err := http.NewRequestWithContext(ollamaCtx, http.MethodPost, s.cfg.OllamaChatURL, bytes.NewReader(body))
 	if err != nil {
 		return "", err
 	}
@@ -578,7 +602,7 @@ func (s *server) callOllama(ctx context.Context, mode string, image []byte, prio
 
 	resp, err := s.client.Do(req)
 	if err != nil {
-		return "", err
+		return "", fmt.Errorf("Ollama request failed after %s: %w", time.Since(start).Round(time.Millisecond), err)
 	}
 	defer resp.Body.Close()
 
@@ -590,6 +614,8 @@ func (s *server) callOllama(ctx context.Context, mode string, image []byte, prio
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		return "", fmt.Errorf("Ollama returned HTTP %d: %s", resp.StatusCode, string(respBody))
 	}
+	log.Printf("ollama response model=%s mode=%s latency=%s response_bytes=%d",
+		s.cfg.OllamaModel, mode, time.Since(start).Round(time.Millisecond), len(respBody))
 
 	var parsed ollamaChatResponse
 	if err := json.Unmarshal(respBody, &parsed); err != nil {
@@ -601,7 +627,11 @@ func (s *server) callOllama(ctx context.Context, mode string, image []byte, prio
 
 	text := cleanModelText(parsed.Message.Content)
 	if text == "" {
-		return "", errors.New("Ollama response did not include message content")
+		if strings.TrimSpace(parsed.Message.Thinking) != "" {
+			return "", fmt.Errorf("Ollama response did not include message content; model returned thinking only (done_reason=%s thinking_bytes=%d). Use a non-thinking vision model such as llama3.2-vision:11b or raise SIDEKICK_MAX_OUTPUT_TOKENS.",
+				firstNonEmpty(parsed.DoneReason, "unknown"), len(parsed.Message.Thinking))
+		}
+		return "", fmt.Errorf("Ollama response did not include message content (done_reason=%s)", firstNonEmpty(parsed.DoneReason, "unknown"))
 	}
 	return text, nil
 }
@@ -627,8 +657,9 @@ type ollamaOptions struct {
 }
 
 type ollamaChatResponse struct {
-	Message ollamaMessage `json:"message"`
-	Error   string        `json:"error,omitempty"`
+	Message    ollamaMessage `json:"message"`
+	DoneReason string        `json:"done_reason,omitempty"`
+	Error      string        `json:"error,omitempty"`
 }
 
 func normalizeMode(mode string) string {

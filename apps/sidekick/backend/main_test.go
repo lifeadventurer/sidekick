@@ -247,6 +247,71 @@ func TestOllamaNoAction(t *testing.T) {
 	}
 }
 
+func TestOllamaThinkingOnlyError(t *testing.T) {
+	srv := testServer()
+	srv.cfg.Provider = "ollama"
+	srv.cfg.FallbackOnAIError = false
+	srv.cfg.OllamaChatURL = "http://ollama.test/api/chat"
+	srv.client = &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		body, err := json.Marshal(ollamaChatResponse{
+			Message:    ollamaMessage{Role: "assistant", Thinking: "The image shows a desk."},
+			DoneReason: "length",
+		})
+		if err != nil {
+			return nil, err
+		}
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Header:     make(http.Header),
+			Body:       io.NopCloser(bytes.NewReader(body)),
+		}, nil
+	})}
+
+	req := httptest.NewRequest(http.MethodPost, "/sidekick/frame?mode=hint", bytes.NewReader([]byte("image")))
+	req.Header.Set("Content-Type", "image/jpeg")
+	rec := httptest.NewRecorder()
+
+	srv.handleFrame(rec, req)
+
+	if rec.Code != http.StatusBadGateway {
+		t.Fatalf("expected %d, got %d body=%s", http.StatusBadGateway, rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "thinking only") {
+		t.Fatalf("expected thinking-only diagnostic, got %s", rec.Body.String())
+	}
+}
+
+func TestOllamaErrorFallsBackForFrame(t *testing.T) {
+	srv := testServer()
+	srv.cfg.Provider = "ollama"
+	srv.cfg.FallbackOnAIError = true
+	srv.cfg.OllamaChatURL = "http://ollama.test/api/chat"
+	srv.client = &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		return nil, io.ErrUnexpectedEOF
+	})}
+
+	req := httptest.NewRequest(http.MethodPost, "/sidekick/frame?mode=hint", bytes.NewReader([]byte("image")))
+	req.Header.Set("Content-Type", "image/jpeg")
+	rec := httptest.NewRecorder()
+
+	srv.handleFrame(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected %d, got %d body=%s", http.StatusOK, rec.Code, rec.Body.String())
+	}
+
+	var parsed sidekickResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &parsed); err != nil {
+		t.Fatal(err)
+	}
+	if parsed.Provider != "ollama-fallback" {
+		t.Fatalf("expected fallback provider, got %q", parsed.Provider)
+	}
+	if parsed.ShouldRespond {
+		t.Fatal("expected no frame response during fallback")
+	}
+}
+
 func TestSlidingFrameContext(t *testing.T) {
 	srv := testServer()
 
