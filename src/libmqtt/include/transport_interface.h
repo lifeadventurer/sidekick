@@ -177,7 +177,7 @@ static inline int NetworkTransportRecv(NetworkContext_t *pNetwork, unsigned char
 
     tuya_transporter_ctrl(transporter, TUYA_TRANSPORTER_GET_TLS_CONFIG, &tls_config);
 
-    int timeout = tls_config ? tls_config->timeout : 5000;
+    int timeout = tls_config ? tls_config->timeout : 120000;
 
     int result = tuya_transporter_read(transporter, (uint8_t *)pMsg, len, timeout);
 
@@ -223,8 +223,8 @@ typedef int32_t (*TransportSend_t)(NetworkContext_t *pNetworkContext, const void
  */
 /* @[define_transportinterface] */
 typedef struct TransportInterface {
-    TransportRecv_t recv;              /**< Transport receive interface. */
-    TransportSend_t send;              /**< Transport send interface. */
+    TransportRecv_t   recv;            /**< Transport receive interface. */
+    TransportSend_t   send;            /**< Transport send interface. */
     NetworkContext_t *pNetworkContext; /**< Implementation-defined network context. */
 } TransportInterface_t;
 /* @[define_transportinterface] */

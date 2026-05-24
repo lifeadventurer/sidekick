@@ -77,11 +77,19 @@ type ttsConfig struct {
 	ElevenLabsOutputFormat string
 }
 
+type ttsCacheEntry struct {
+	Audio       []byte
+	ContentType string
+	Format      string
+	CreatedAt   time.Time
+}
+
 type server struct {
 	cfg      config
 	client   *http.Client
 	mu       sync.Mutex
 	sessions map[string]*sessionState
+	ttsCache map[string]ttsCacheEntry
 }
 
 type sessionState struct {
@@ -104,6 +112,8 @@ type sidekickResponse struct {
 	ShouldRespond bool   `json:"should_respond"`
 	ReceivedBytes int    `json:"received_bytes"`
 	LatencyMS     int64  `json:"latency_ms"`
+	AudioBase64   string `json:"audio_base64,omitempty"`
+	AudioFormat   string `json:"audio_format,omitempty"`
 }
 
 type errorResponse struct {
@@ -216,6 +226,7 @@ func newServer(cfg config) *server {
 			Timeout: cfg.RequestTimeout,
 		},
 		sessions: make(map[string]*sessionState),
+		ttsCache: make(map[string]ttsCacheEntry),
 	}
 }
 
@@ -281,6 +292,8 @@ func (s *server) handleFrame(w http.ResponseWriter, r *http.Request) {
 			sessionID, provider, mode, shouldRespond, message)
 	}
 
+	s.maybeGenerateTTS(r.Context(), shouldRespond, message)
+
 	writeJSON(w, http.StatusOK, sidekickResponse{
 		Mode:          mode,
 		SessionID:     sessionID,
@@ -318,6 +331,8 @@ func (s *server) handleSessionEnd(w http.ResponseWriter, r *http.Request) {
 		log.Printf("summary result session=%s provider=%s should_respond=%t message=%q",
 			sessionID, provider, shouldRespond, message)
 	}
+
+	s.maybeGenerateTTS(r.Context(), shouldRespond, message)
 
 	writeJSON(w, http.StatusOK, sidekickResponse{
 		Mode:          "summary",
@@ -357,13 +372,51 @@ func (s *server) handleTTS(w http.ResponseWriter, r *http.Request) {
 		provider = s.cfg.TTS.Provider
 	}
 
+	key := normalizeTextKey(text)
+	var entry ttsCacheEntry
+	var found bool
+
+	if entry, found = s.getCachedTTS(key); !found {
+		// Try prefix match on cached keys (in case of client truncation)
+		s.mu.Lock()
+		for cachedKey, cachedEntry := range s.ttsCache {
+			if len(key) >= 10 && strings.HasPrefix(cachedKey, key) {
+				entry = cachedEntry
+				found = true
+				if s.cfg.Verbose {
+					log.Printf("TTS cache prefix match hit: requested key %q matches cached key %q", key, cachedKey)
+				}
+				break
+			}
+		}
+		s.mu.Unlock()
+	}
+
+	if found {
+		if s.cfg.Verbose {
+			log.Printf("TTS cache hit for text key=%q, serving %d bytes", key, len(entry.Audio))
+		}
+		w.Header().Set("Content-Type", entry.ContentType)
+		w.Header().Set("Content-Length", strconv.Itoa(len(entry.Audio)))
+		w.Header().Set("X-Sidekick-TTS-Provider", provider+"-cached")
+		w.Header().Set("X-Sidekick-Audio-Format", entry.Format)
+		w.WriteHeader(http.StatusOK)
+		if _, err := w.Write(entry.Audio); err != nil {
+			log.Printf("failed to write TTS audio: %v", err)
+		}
+		return
+	}
+
 	audio, contentType, format, err := s.synthesizeSpeech(r.Context(), provider, req)
 	if err != nil {
 		writeJSON(w, http.StatusBadGateway, errorResponse{Error: err.Error()})
 		return
 	}
 
+	s.cacheTTS(key, audio, contentType, format)
+
 	w.Header().Set("Content-Type", contentType)
+	w.Header().Set("Content-Length", strconv.Itoa(len(audio)))
 	w.Header().Set("X-Sidekick-TTS-Provider", provider)
 	w.Header().Set("X-Sidekick-Audio-Format", format)
 	w.WriteHeader(http.StatusOK)
@@ -411,6 +464,75 @@ func (s *server) readImage(r *http.Request) (io.ReadCloser, string, error) {
 	}
 
 	return r.Body, mimeType, nil
+}
+
+func normalizeTextKey(text string) string {
+	return strings.ToLower(strings.Join(strings.Fields(text), " "))
+}
+
+func (s *server) cacheTTS(key string, audio []byte, contentType, format string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	now := time.Now()
+	for k, v := range s.ttsCache {
+		if now.Sub(v.CreatedAt) > 10*time.Minute {
+			delete(s.ttsCache, k)
+		}
+	}
+
+	if len(s.ttsCache) > 50 {
+		s.ttsCache = make(map[string]ttsCacheEntry)
+	}
+
+	s.ttsCache[key] = ttsCacheEntry{
+		Audio:       audio,
+		ContentType: contentType,
+		Format:      format,
+		CreatedAt:   now,
+	}
+}
+
+func (s *server) getCachedTTS(key string) (ttsCacheEntry, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	entry, found := s.ttsCache[key]
+	return entry, found
+}
+
+func (s *server) maybeGenerateTTS(_ context.Context, shouldRespond bool, message string) {
+	if !shouldRespond || message == "" {
+		return
+	}
+	provider := s.cfg.TTS.Provider
+	if provider == "" || provider == "none" {
+		return
+	}
+
+	// Use a background context so TTS completes even if the board HTTP client
+	// has already disconnected (same pattern as callOllama).
+	ttsCtx, cancel := context.WithTimeout(context.Background(), s.cfg.RequestTimeout)
+	defer cancel()
+
+	format := "pcm_16000"
+	start := time.Now()
+	audio, contentType, outputFormat, err := s.synthesizeSpeech(ttsCtx, provider, ttsRequest{
+		Text:   message,
+		Format: format,
+	})
+	if err != nil {
+		log.Printf("pre-generation TTS failed (non-fatal): %v", err)
+		return
+	}
+
+	key := normalizeTextKey(message)
+	s.cacheTTS(key, audio, contentType, outputFormat)
+
+	if s.cfg.Verbose {
+		log.Printf("pre-generated and cached TTS provider=%s latency=%s audio_bytes=%d key=%q",
+			provider, time.Since(start).Round(time.Millisecond), len(audio), key)
+	}
 }
 
 func (s *server) synthesizeSpeech(ctx context.Context, provider string, req ttsRequest) ([]byte, string, string, error) {
@@ -697,7 +819,7 @@ func normalizeMode(mode string) string {
 func tutorSystemPrompt(mode string, summary bool) string {
 	base := "You are SideKick, a visual AI tutor watching ordered snapshots from a student's desk. Compare the current frame with prior frames to infer motion, progress, pauses, and possible wrong direction. Respond with one short message suitable for a tiny device screen. Use at most 25 words. Do not explain your reasoning. Do not mention camera frames or images."
 	if summary {
-		return base + " The session has ended. Summarize what the student worked on, visible progress, and one concrete next step. Never return NO_ACTION."
+		return base + " The session has ended. Summarize what the student worked on, visible progress, and one concrete next step. Use at most 40 words in a single brief paragraph. Do not use bullet points. Never return NO_ACTION."
 	}
 	switch mode {
 	case "active":

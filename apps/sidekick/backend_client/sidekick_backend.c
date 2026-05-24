@@ -18,6 +18,7 @@
 #include "sidekick_config.h"
 #include "sidekick_log.h"
 #include "sidekick_session.h"
+#include "mix_method.h"
 #include "tal_api.h"
 
 #if defined(ENABLE_LIBLWIP) && (ENABLE_LIBLWIP == 1)
@@ -239,7 +240,8 @@ static OPERATE_RET sidekick_backend_speak(const char *message)
     return rt;
 }
 
-static bool sidekick_backend_handle_json(const http_client_response_t *response, char *message, size_t message_len)
+static bool sidekick_backend_handle_json(const http_client_response_t *response, char *message, size_t message_len,
+                                         uint8_t **audio_out, size_t *audio_len_out)
 {
     bool should_speak = false;
 
@@ -270,6 +272,33 @@ static bool sidekick_backend_handle_json(const http_client_response_t *response,
                       cJSON_IsString(message_item) ? 1 : 0);
     }
 
+    /* Parse inline TTS audio if present. */
+    if (should_speak && (audio_out != NULL) && (audio_len_out != NULL)) {
+        cJSON *audio_b64 = cJSON_GetObjectItem(root, "audio_base64");
+
+        if (cJSON_IsString(audio_b64) && (audio_b64->valuestring != NULL) && (audio_b64->valuestring[0] != '\0')) {
+            size_t   b64_len     = strlen(audio_b64->valuestring);
+            size_t   max_decoded = b64_len; /* decoded is always smaller than base64 */
+            uint8_t *decoded     = (uint8_t *)tal_malloc(max_decoded);
+
+            if (decoded != NULL) {
+                int decoded_len = tuya_base64_decode(audio_b64->valuestring, decoded);
+
+                if (decoded_len > 0) {
+                    *audio_out     = decoded;
+                    *audio_len_out = (size_t)decoded_len;
+                    SIDEKICK_LOGI(SIDEKICK_BACKEND_TAG, "inline audio decoded base64=%u pcm=%d", (unsigned int)b64_len,
+                                  decoded_len);
+                } else {
+                    tal_free(decoded);
+                    SIDEKICK_LOGW(SIDEKICK_BACKEND_TAG, "failed to decode inline audio base64");
+                }
+            } else {
+                SIDEKICK_LOGW(SIDEKICK_BACKEND_TAG, "failed to allocate buffer for inline audio");
+            }
+        }
+    }
+
     cJSON_Delete(root);
 
     return should_speak;
@@ -284,6 +313,8 @@ static OPERATE_RET sidekick_backend_upload_frame(void)
     char                   path[SIDEKICK_BACKEND_PATH_MAX];
     char                   message[SIDEKICK_BACKEND_MESSAGE_MAX] = {0};
     bool                   should_speak                          = false;
+    uint8_t               *audio                                 = NULL;
+    size_t                 audio_len                             = 0;
     const char            *mode                                  = sidekick_session_mode_name(sidekick_session_mode());
 
     snprintf(path, sizeof(path), "/sidekick/frame?mode=%s&session=%s", mode, SIDEKICK_BACKEND_SESSION_ID);
@@ -308,7 +339,7 @@ static OPERATE_RET sidekick_backend_upload_frame(void)
 
     rt = sidekick_backend_post(path, jpeg, jpeg_len, &response);
     if (rt == OPRT_OK) {
-        should_speak = sidekick_backend_handle_json(&response, message, sizeof(message));
+        should_speak = sidekick_backend_handle_json(&response, message, sizeof(message), &audio, &audio_len);
     }
 
 done:
@@ -318,8 +349,17 @@ done:
     http_client_free(&response);
 
     if (should_speak) {
-        SIDEKICK_LOGI(SIDEKICK_BACKEND_TAG, "frame response has speech; requesting TTS");
-        TUYA_CALL_ERR_LOG(sidekick_backend_speak(message));
+        if ((audio != NULL) && (audio_len > 0)) {
+            SIDEKICK_LOGI(SIDEKICK_BACKEND_TAG, "playing inline TTS audio pcm_bytes=%u", (unsigned int)audio_len);
+            TUYA_CALL_ERR_LOG(sidekick_audio_play_pcm(audio, (uint32_t)audio_len));
+        } else {
+            SIDEKICK_LOGI(SIDEKICK_BACKEND_TAG, "no inline audio; requesting TTS separately");
+            TUYA_CALL_ERR_LOG(sidekick_backend_speak(message));
+        }
+    }
+
+    if (audio != NULL) {
+        tal_free(audio);
     }
     return rt;
 }
@@ -330,21 +370,33 @@ static OPERATE_RET sidekick_backend_request_summary(void)
     char                   path[SIDEKICK_BACKEND_PATH_MAX];
     char                   message[SIDEKICK_BACKEND_MESSAGE_MAX] = {0};
     bool                   should_speak                          = false;
+    uint8_t               *audio                                 = NULL;
+    size_t                 audio_len                             = 0;
     OPERATE_RET            rt                                    = OPRT_OK;
 
     snprintf(path, sizeof(path), "/sidekick/session/end?session=%s", SIDEKICK_BACKEND_SESSION_ID);
     rt = sidekick_backend_post(path, NULL, 0, &response);
     if (rt == OPRT_OK) {
-        should_speak = sidekick_backend_handle_json(&response, message, sizeof(message));
+        should_speak = sidekick_backend_handle_json(&response, message, sizeof(message), &audio, &audio_len);
     }
 
     http_client_free(&response);
 
     if (should_speak) {
-        SIDEKICK_LOGI(SIDEKICK_BACKEND_TAG, "summary response has speech; requesting TTS");
-        TUYA_CALL_ERR_LOG(sidekick_backend_speak(message));
+        if ((audio != NULL) && (audio_len > 0)) {
+            SIDEKICK_LOGI(SIDEKICK_BACKEND_TAG, "playing inline summary TTS audio pcm_bytes=%u",
+                          (unsigned int)audio_len);
+            TUYA_CALL_ERR_LOG(sidekick_audio_play_pcm(audio, (uint32_t)audio_len));
+        } else {
+            SIDEKICK_LOGI(SIDEKICK_BACKEND_TAG, "no inline audio; requesting TTS separately");
+            TUYA_CALL_ERR_LOG(sidekick_backend_speak(message));
+        }
     } else if (rt == OPRT_OK) {
         SIDEKICK_LOGW(SIDEKICK_BACKEND_TAG, "summary response had no speakable message");
+    }
+
+    if (audio != NULL) {
+        tal_free(audio);
     }
     return rt;
 }

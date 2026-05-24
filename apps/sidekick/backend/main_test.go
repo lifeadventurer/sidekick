@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"io"
 	"net/http"
@@ -630,5 +631,61 @@ func TestSharedSecret(t *testing.T) {
 
 	if rec.Code != http.StatusUnauthorized {
 		t.Fatalf("expected %d, got %d", http.StatusUnauthorized, rec.Code)
+	}
+}
+
+func TestTTSCaching(t *testing.T) {
+	srv := testServer()
+	srv.cfg.TTS.Provider = "openai"
+	srv.cfg.TTS.OpenAIURL = "https://openai.test/v1/audio/speech"
+
+	// Mock HTTP client to return a mock audio file on first call
+	callCount := 0
+	srv.client = &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		callCount++
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Header:     http.Header{"Content-Type": []string{"audio/L16"}},
+			Body:       io.NopCloser(bytes.NewReader([]byte("audio-data"))),
+		}, nil
+	})}
+
+	message := "Hello world"
+	srv.maybeGenerateTTS(context.Background(), true, message)
+
+	// Verify it's in the cache
+	key := normalizeTextKey(message)
+	entry, found := srv.getCachedTTS(key)
+	if !found {
+		t.Fatal("expected message to be cached")
+	}
+	if string(entry.Audio) != "audio-data" {
+		t.Fatalf("expected audio-data in cache, got %q", string(entry.Audio))
+	}
+
+	// Verify normalizeTextKey handles whitespaces and lowercasing
+	altKey := normalizeTextKey("  HELLO    WORLD  \n")
+	if altKey != key {
+		t.Fatalf("expected normalized key to match %q, got %q", key, altKey)
+	}
+
+	// Call handleTTS to verify we get a cache hit
+	req := httptest.NewRequest(http.MethodPost, "/sidekick/tts", bytes.NewReader([]byte(`{"text":"  Hello  World  "}`)))
+	rec := httptest.NewRecorder()
+	srv.handleTTS(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected HTTP 200, got %d body=%s", rec.Code, rec.Body.String())
+	}
+	if provider := rec.Header().Get("X-Sidekick-TTS-Provider"); provider != "openai-cached" {
+		t.Fatalf("expected provider openai-cached (indicating cache hit), got %q", provider)
+	}
+	if rec.Body.String() != "audio-data" {
+		t.Fatalf("expected audio-data, got %q", rec.Body.String())
+	}
+
+	// Ensure no extra HTTP call was made
+	if callCount != 1 {
+		t.Fatalf("expected exactly 1 call (pre-generation), got %d calls", callCount)
 	}
 }
