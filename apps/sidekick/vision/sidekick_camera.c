@@ -6,8 +6,17 @@
 static OPERATE_RET sidekick_camera_preview_start_in_rect(uint16_t x, uint16_t y, uint16_t width, uint16_t height);
 
 #if defined(ENABLE_CAMERA) && (ENABLE_CAMERA == 1) && defined(ENABLE_DISPLAY) && (ENABLE_DISPLAY == 1)
+#include "tal_api.h"
 #include "tdl_camera_manage.h"
 #include "tdl_display_manage.h"
+
+#if defined(ENABLE_EXT_RAM) && (ENABLE_EXT_RAM == 1)
+#define SIDEKICK_CAMERA_MALLOC tal_psram_malloc
+#define SIDEKICK_CAMERA_FREE   tal_psram_free
+#else
+#define SIDEKICK_CAMERA_MALLOC tal_malloc
+#define SIDEKICK_CAMERA_FREE   tal_free
+#endif
 
 #define SIDEKICK_DISPLAY_FRAME_BUFF_NUM 2
 #define SIDEKICK_GLYPH_WIDTH            5
@@ -15,23 +24,32 @@ static OPERATE_RET sidekick_camera_preview_start_in_rect(uint16_t x, uint16_t y,
 #define SIDEKICK_GLYPH_HEIGHT           7
 #define SIDEKICK_END_LETTERS            3
 
-static TDL_DISP_HANDLE_T      s_display_handle = NULL;
-static TDL_DISP_DEV_INFO_T    s_display_info;
-static TDL_FB_MANAGE_HANDLE_T s_fb_manage      = NULL;
-static TDL_CAMERA_HANDLE_T    s_camera_handle  = NULL;
-static bool                   s_display_ready  = false;
-static bool                   s_camera_open    = false;
-static bool                   s_preview_active = false;
-static bool                   s_overlay_active = false;
-static uint16_t               s_canvas_width   = 0;
-static uint16_t               s_canvas_height  = 0;
-static bool                   s_rotate_canvas  = false;
-static bool                   s_flip_canvas    = false;
-static uint16_t               s_header_height  = 0;
-static uint16_t               s_end_x          = 0;
-static uint16_t               s_end_y          = 0;
-static uint16_t               s_end_w          = 0;
-static uint16_t               s_end_h          = 0;
+typedef struct {
+    uint8_t     *data;
+    uint32_t     len;
+    bool         need_capture;
+    SEM_HANDLE   sem;
+    MUTEX_HANDLE mutex;
+} SIDEKICK_JPEG_CAPTURE_T;
+
+static TDL_DISP_HANDLE_T       s_display_handle = NULL;
+static TDL_DISP_DEV_INFO_T     s_display_info;
+static TDL_FB_MANAGE_HANDLE_T  s_fb_manage      = NULL;
+static TDL_CAMERA_HANDLE_T     s_camera_handle  = NULL;
+static bool                    s_display_ready  = false;
+static bool                    s_camera_open    = false;
+static bool                    s_preview_active = false;
+static bool                    s_overlay_active = false;
+static uint16_t                s_canvas_width   = 0;
+static uint16_t                s_canvas_height  = 0;
+static bool                    s_rotate_canvas  = false;
+static bool                    s_flip_canvas    = false;
+static uint16_t                s_header_height  = 0;
+static uint16_t                s_end_x          = 0;
+static uint16_t                s_end_y          = 0;
+static uint16_t                s_end_w          = 0;
+static uint16_t                s_end_h          = 0;
+static SIDEKICK_JPEG_CAPTURE_T s_jpeg_capture;
 
 static uint32_t sidekick_camera_frame_len(TUYA_DISPLAY_PIXEL_FMT_E fmt, uint16_t width, uint16_t height)
 {
@@ -231,6 +249,56 @@ static OPERATE_RET sidekick_camera_frame_cb(TDL_CAMERA_HANDLE_T hdl, TDL_CAMERA_
     return tdl_disp_dev_flush(s_display_handle, fb);
 }
 
+static OPERATE_RET sidekick_camera_encoded_frame_cb(TDL_CAMERA_HANDLE_T hdl, TDL_CAMERA_FRAME_T *frame)
+{
+    (void)hdl;
+
+    if ((frame == NULL) || (s_jpeg_capture.mutex == NULL) || !s_jpeg_capture.need_capture) {
+        return OPRT_OK;
+    }
+
+    tal_mutex_lock(s_jpeg_capture.mutex);
+    if (s_jpeg_capture.need_capture) {
+        if (s_jpeg_capture.data != NULL) {
+            SIDEKICK_CAMERA_FREE(s_jpeg_capture.data);
+            s_jpeg_capture.data = NULL;
+        }
+
+        s_jpeg_capture.data = (uint8_t *)SIDEKICK_CAMERA_MALLOC(frame->data_len);
+        if (s_jpeg_capture.data != NULL) {
+            memcpy(s_jpeg_capture.data, frame->data, frame->data_len);
+            s_jpeg_capture.len          = frame->data_len;
+            s_jpeg_capture.need_capture = false;
+        } else {
+            s_jpeg_capture.len          = 0;
+            s_jpeg_capture.need_capture = false;
+            SIDEKICK_LOGE("camera", "failed to allocate jpeg capture len=%u", (unsigned int)frame->data_len);
+        }
+
+        if (s_jpeg_capture.sem != NULL) {
+            tal_semaphore_post(s_jpeg_capture.sem);
+        }
+    }
+    tal_mutex_unlock(s_jpeg_capture.mutex);
+
+    return OPRT_OK;
+}
+
+static OPERATE_RET sidekick_camera_capture_init(void)
+{
+    OPERATE_RET rt = OPRT_OK;
+
+    if (s_jpeg_capture.mutex == NULL) {
+        TUYA_CALL_ERR_RETURN(tal_mutex_create_init(&s_jpeg_capture.mutex));
+    }
+
+    if (s_jpeg_capture.sem == NULL) {
+        TUYA_CALL_ERR_RETURN(tal_semaphore_create_init(&s_jpeg_capture.sem, 0, 1));
+    }
+
+    return rt;
+}
+
 static OPERATE_RET sidekick_display_open(void)
 {
     OPERATE_RET rt = OPRT_OK;
@@ -294,13 +362,15 @@ static OPERATE_RET sidekick_camera_preview_start_in_rect(uint16_t x, uint16_t y,
     }
 
     TDL_CAMERA_CFG_T cfg = {
-        .fps          = SIDEKICK_CAMERA_FPS,
-        .width        = SIDEKICK_CAMERA_WIDTH,
-        .height       = SIDEKICK_CAMERA_HEIGHT,
-        .out_fmt      = TDL_CAMERA_FMT_YUV422,
-        .get_frame_cb = sidekick_camera_frame_cb,
+        .fps                  = SIDEKICK_CAMERA_FPS,
+        .width                = SIDEKICK_CAMERA_WIDTH,
+        .height               = SIDEKICK_CAMERA_HEIGHT,
+        .out_fmt              = TDL_CAMERA_FMT_JPEG_YUV422_BOTH,
+        .get_frame_cb         = sidekick_camera_frame_cb,
+        .get_encoded_frame_cb = sidekick_camera_encoded_frame_cb,
     };
 
+    TUYA_CALL_ERR_RETURN(sidekick_camera_capture_init());
     TUYA_CALL_ERR_RETURN(tdl_camera_dev_open(s_camera_handle, &cfg));
     s_camera_open    = true;
     s_preview_active = true;
@@ -361,6 +431,77 @@ OPERATE_RET sidekick_camera_preview_stop(void)
     SIDEKICK_LOGI("camera", "camera preview paused");
     return OPRT_OK;
 #else
+    return OPRT_OK;
+#endif
+}
+
+OPERATE_RET sidekick_camera_capture_jpeg(uint8_t **image_data, uint32_t *image_data_len)
+{
+#if defined(ENABLE_CAMERA) && (ENABLE_CAMERA == 1) && defined(ENABLE_DISPLAY) && (ENABLE_DISPLAY == 1)
+    OPERATE_RET rt = OPRT_OK;
+
+    if ((image_data == NULL) || (image_data_len == NULL)) {
+        return OPRT_INVALID_PARM;
+    }
+
+    *image_data     = NULL;
+    *image_data_len = 0;
+
+    if (!s_camera_open) {
+        TUYA_CALL_ERR_RETURN(sidekick_camera_preview_start());
+    }
+
+    TUYA_CALL_ERR_RETURN(sidekick_camera_capture_init());
+
+    tal_mutex_lock(s_jpeg_capture.mutex);
+    s_jpeg_capture.need_capture = true;
+    tal_mutex_unlock(s_jpeg_capture.mutex);
+
+    rt = tal_semaphore_wait(s_jpeg_capture.sem, 3000);
+    if (rt != OPRT_OK) {
+        tal_mutex_lock(s_jpeg_capture.mutex);
+        s_jpeg_capture.need_capture = false;
+        tal_mutex_unlock(s_jpeg_capture.mutex);
+        SIDEKICK_LOGW("camera", "jpeg capture timeout");
+        return OPRT_COM_ERROR;
+    }
+
+    tal_mutex_lock(s_jpeg_capture.mutex);
+    if ((s_jpeg_capture.data == NULL) || (s_jpeg_capture.len == 0)) {
+        tal_mutex_unlock(s_jpeg_capture.mutex);
+        return OPRT_COM_ERROR;
+    }
+
+    *image_data = (uint8_t *)SIDEKICK_CAMERA_MALLOC(s_jpeg_capture.len);
+    if (*image_data == NULL) {
+        tal_mutex_unlock(s_jpeg_capture.mutex);
+        return OPRT_MALLOC_FAILED;
+    }
+
+    memcpy(*image_data, s_jpeg_capture.data, s_jpeg_capture.len);
+    *image_data_len = s_jpeg_capture.len;
+    tal_mutex_unlock(s_jpeg_capture.mutex);
+
+    return OPRT_OK;
+#else
+    (void)image_data;
+    (void)image_data_len;
+    return OPRT_NOT_SUPPORTED;
+#endif
+}
+
+OPERATE_RET sidekick_camera_free_jpeg(uint8_t **image_data)
+{
+#if defined(ENABLE_CAMERA) && (ENABLE_CAMERA == 1) && defined(ENABLE_DISPLAY) && (ENABLE_DISPLAY == 1)
+    if ((image_data == NULL) || (*image_data == NULL)) {
+        return OPRT_INVALID_PARM;
+    }
+
+    SIDEKICK_CAMERA_FREE(*image_data);
+    *image_data = NULL;
+    return OPRT_OK;
+#else
+    (void)image_data;
     return OPRT_OK;
 #endif
 }

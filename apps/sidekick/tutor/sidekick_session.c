@@ -1,6 +1,7 @@
 #include "sidekick_session.h"
 
 #include "sidekick_audio.h"
+#include "sidekick_backend.h"
 #include "sidekick_config.h"
 #include "sidekick_log.h"
 
@@ -28,6 +29,10 @@ void sidekick_session_tick(void)
     if ((s_tick_count % 5) == 0) {
         SIDEKICK_LOGI("tutor", "mode=%s state=%d audio_frames=%u", sidekick_session_mode_name(s_mode), (int)s_state,
                       (unsigned int)sidekick_audio_frame_count());
+    }
+
+    if ((s_tick_count % SIDEKICK_FRAME_UPLOAD_INTERVAL_SEC) == 0) {
+        sidekick_backend_request_frame();
     }
 }
 
@@ -79,6 +84,7 @@ void sidekick_session_end(void)
 
     s_state = SIDEKICK_SESSION_IDLE;
     SIDEKICK_LOGI("tutor", "session ended");
+    sidekick_backend_end_session();
 }
 
 void sidekick_session_set_mode(SIDEKICK_TUTOR_MODE_E mode)

@@ -1,4 +1,5 @@
 #include "sidekick_audio.h"
+#include "sidekick_backend.h"
 #include "sidekick_camera.h"
 #include "sidekick_config.h"
 #include "sidekick_hardware.h"
@@ -23,6 +24,9 @@ static void sidekick_user_main(void)
     SIDEKICK_LOGI("main", "platform=%s board=%s", PLATFORM_CHIP, PLATFORM_BOARD);
 
     TUYA_CALL_ERR_LOG(sidekick_hardware_init());
+    TUYA_CALL_ERR_LOG(tal_sw_timer_init());
+    TUYA_CALL_ERR_LOG(tal_workq_init());
+    TUYA_CALL_ERR_LOG(sidekick_backend_init());
     TUYA_CALL_ERR_LOG(sidekick_session_init());
     TUYA_CALL_ERR_LOG(sidekick_ui_start());
     TUYA_CALL_ERR_LOG(sidekick_audio_input_start());

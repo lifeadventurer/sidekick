@@ -10,6 +10,7 @@ set(APP_SRCS
     ${APP_PATH}/src/sidekick_main.c
     ${APP_PATH}/hardware/sidekick_hardware.c
     ${APP_PATH}/vision/sidekick_camera.c
+    ${APP_PATH}/backend_client/sidekick_backend.c
     ${APP_PATH}/audio/sidekick_audio.c
     ${APP_PATH}/ui/sidekick_ui.c
     ${APP_PATH}/tutor/sidekick_session.c
@@ -19,6 +20,7 @@ set(APP_INC
     ${APP_PATH}/include
     ${APP_PATH}/hardware
     ${APP_PATH}/vision
+    ${APP_PATH}/backend_client
     ${APP_PATH}/audio
     ${APP_PATH}/ui
     ${APP_PATH}/tutor
