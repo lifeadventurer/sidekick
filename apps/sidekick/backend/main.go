@@ -128,6 +128,7 @@ type ttsRequest struct {
 }
 
 func main() {
+	log.SetFlags(0)
 	loadLocalEnv()
 	cfg := loadConfig()
 	flag.BoolVar(&cfg.Verbose, "verbose", cfg.Verbose, "print verbose Ollama and response logs")
@@ -141,7 +142,7 @@ func main() {
 	mux.HandleFunc("POST /sidekick/tts", srv.handleTTS)
 
 	addr := ":" + cfg.Port
-	log.Printf("SideKick backend listening on %s provider=%s model=%s verbose=%t", addr, cfg.Provider, cfg.OllamaModel, cfg.Verbose)
+	logInfo("SideKick backend listening", "addr", addr, "provider", cfg.Provider, "model", cfg.OllamaModel, "verbose", cfg.Verbose)
 	log.Fatal(http.ListenAndServe(addr, logRequests(mux)))
 }
 
@@ -183,7 +184,7 @@ func loadConfig() config {
 func loadLocalEnv() {
 	for _, path := range []string{".env.local", ".env"} {
 		if err := loadEnvFile(path); err != nil && !errors.Is(err, os.ErrNotExist) {
-			log.Printf("failed to load %s: %v", path, err)
+			logWarn("failed to load env file", "path", path, "error", err)
 		}
 	}
 }
@@ -275,7 +276,7 @@ func (s *server) handleFrame(w http.ResponseWriter, r *http.Request) {
 
 	message, shouldRespond, provider, err := s.analyze(r.Context(), mode, imageBytes, priorFrames, false)
 	if err != nil {
-		log.Printf("analysis failed: %v", err)
+		logError("analysis failed", "error", err)
 		writeJSON(w, http.StatusBadGateway, errorResponse{Error: err.Error()})
 		return
 	}
@@ -288,8 +289,7 @@ func (s *server) handleFrame(w http.ResponseWriter, r *http.Request) {
 	})
 
 	if s.cfg.Verbose {
-		log.Printf("frame result session=%s provider=%s mode=%s should_respond=%t message=%q",
-			sessionID, provider, mode, shouldRespond, message)
+		logInfo("frame result", "session", sessionID, "provider", provider, "mode", mode, "should_respond", shouldRespond, "message", message)
 	}
 
 	s.maybeGenerateTTS(r.Context(), shouldRespond, message)
@@ -321,15 +321,14 @@ func (s *server) handleSessionEnd(w http.ResponseWriter, r *http.Request) {
 
 	message, shouldRespond, provider, err := s.analyze(r.Context(), "summary", nil, frames, true)
 	if err != nil {
-		log.Printf("summary failed: %v", err)
+		logError("summary failed", "error", err)
 		writeJSON(w, http.StatusBadGateway, errorResponse{Error: err.Error()})
 		return
 	}
 	s.clearSession(sessionID)
 
 	if s.cfg.Verbose {
-		log.Printf("summary result session=%s provider=%s should_respond=%t message=%q",
-			sessionID, provider, shouldRespond, message)
+		logInfo("summary result", "session", sessionID, "provider", provider, "should_respond", shouldRespond, "message", message)
 	}
 
 	s.maybeGenerateTTS(r.Context(), shouldRespond, message)
@@ -384,7 +383,7 @@ func (s *server) handleTTS(w http.ResponseWriter, r *http.Request) {
 				entry = cachedEntry
 				found = true
 				if s.cfg.Verbose {
-					log.Printf("TTS cache prefix match hit: requested key %q matches cached key %q", key, cachedKey)
+					logInfo("TTS cache prefix match hit", "requested", key, "matched", cachedKey)
 				}
 				break
 			}
@@ -394,7 +393,7 @@ func (s *server) handleTTS(w http.ResponseWriter, r *http.Request) {
 
 	if found {
 		if s.cfg.Verbose {
-			log.Printf("TTS cache hit for text key=%q, serving %d bytes", key, len(entry.Audio))
+			logInfo("TTS cache hit", "key", key, "bytes", len(entry.Audio))
 		}
 		w.Header().Set("Content-Type", entry.ContentType)
 		w.Header().Set("Content-Length", strconv.Itoa(len(entry.Audio)))
@@ -402,7 +401,7 @@ func (s *server) handleTTS(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("X-Sidekick-Audio-Format", entry.Format)
 		w.WriteHeader(http.StatusOK)
 		if _, err := w.Write(entry.Audio); err != nil {
-			log.Printf("failed to write TTS audio: %v", err)
+			logError("failed to write TTS audio", "error", err)
 		}
 		return
 	}
@@ -421,7 +420,7 @@ func (s *server) handleTTS(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("X-Sidekick-Audio-Format", format)
 	w.WriteHeader(http.StatusOK)
 	if _, err := w.Write(audio); err != nil {
-		log.Printf("failed to write TTS audio: %v", err)
+		logError("failed to write TTS audio", "error", err)
 	}
 }
 
@@ -522,7 +521,7 @@ func (s *server) maybeGenerateTTS(_ context.Context, shouldRespond bool, message
 		Format: format,
 	})
 	if err != nil {
-		log.Printf("pre-generation TTS failed (non-fatal): %v", err)
+		logWarn("pre-generation TTS failed (non-fatal)", "error", err)
 		return
 	}
 
@@ -530,8 +529,7 @@ func (s *server) maybeGenerateTTS(_ context.Context, shouldRespond bool, message
 	s.cacheTTS(key, audio, contentType, outputFormat)
 
 	if s.cfg.Verbose {
-		log.Printf("pre-generated and cached TTS provider=%s latency=%s audio_bytes=%d key=%q",
-			provider, time.Since(start).Round(time.Millisecond), len(audio), key)
+		logInfo("pre-generated and cached TTS", "provider", provider, "latency", time.Since(start).Round(time.Millisecond), "audio_bytes", len(audio), "key", key)
 	}
 }
 
@@ -655,7 +653,7 @@ func (s *server) analyze(ctx context.Context, mode string, image []byte, priorFr
 		message, err := s.callOllama(ctx, mode, image, priorFrames, summary)
 		if err != nil {
 			if s.cfg.FallbackOnAIError {
-				log.Printf("ollama unavailable; returning fallback response: %v", err)
+				logWarn("ollama unavailable; returning fallback response", "error", err)
 				if summary {
 					return fakeMessage(mode, true), true, "ollama-fallback", nil
 				}
@@ -728,8 +726,7 @@ func (s *server) callOllama(_ context.Context, mode string, image []byte, priorF
 	defer cancel()
 
 	if s.cfg.Verbose {
-		log.Printf("ollama request model=%s mode=%s summary=%t images=%d image_bytes=%d payload_bytes=%d",
-			s.cfg.OllamaModel, mode, summary, imageCount, imageBytes, len(body))
+		logInfo("ollama request", "model", s.cfg.OllamaModel, "mode", mode, "summary", summary, "images", imageCount, "image_bytes", imageBytes, "payload_bytes", len(body))
 	}
 
 	start := time.Now()
@@ -754,8 +751,7 @@ func (s *server) callOllama(_ context.Context, mode string, image []byte, priorF
 		return "", fmt.Errorf("Ollama returned HTTP %d: %s", resp.StatusCode, string(respBody))
 	}
 	if s.cfg.Verbose {
-		log.Printf("ollama response model=%s mode=%s latency=%s response_bytes=%d",
-			s.cfg.OllamaModel, mode, time.Since(start).Round(time.Millisecond), len(respBody))
+		logInfo("ollama response", "model", s.cfg.OllamaModel, "mode", mode, "latency", time.Since(start).Round(time.Millisecond), "response_bytes", len(respBody))
 	}
 
 	var parsed ollamaChatResponse
@@ -768,8 +764,7 @@ func (s *server) callOllama(_ context.Context, mode string, image []byte, priorF
 
 	text := cleanModelText(parsed.Message.Content)
 	if s.cfg.Verbose {
-		log.Printf("ollama raw message=%q thinking_bytes=%d done_reason=%s",
-			text, len(parsed.Message.Thinking), firstNonEmpty(parsed.DoneReason, "unknown"))
+		logInfo("ollama raw message", "message", text, "thinking_bytes", len(parsed.Message.Thinking), "done_reason", firstNonEmpty(parsed.DoneReason, "unknown"))
 	}
 	if text == "" {
 		if strings.TrimSpace(parsed.Message.Thinking) != "" {
@@ -898,7 +893,7 @@ func (s *server) persistCapture(sessionID, mode string, image []byte) {
 	}
 
 	if err := os.MkdirAll(s.cfg.CaptureDir, 0o755); err != nil {
-		log.Printf("capture save mkdir failed: %v", err)
+		logError("capture save mkdir failed", "error", err)
 		return
 	}
 
@@ -909,10 +904,10 @@ func (s *server) persistCapture(sessionID, mode string, image []byte) {
 	)
 	path := filepath.Join(s.cfg.CaptureDir, name)
 	if err := os.WriteFile(path, image, 0o644); err != nil {
-		log.Printf("capture save write failed: %v", err)
+		logError("capture save write failed", "error", err)
 		return
 	}
-	log.Printf("saved capture %s (%d bytes)", path, len(image))
+	logInfo("saved capture", "path", path, "bytes", len(image))
 }
 
 func normalizeSessionID(sessionID string) string {
@@ -970,7 +965,7 @@ func writeJSON(w http.ResponseWriter, status int, value any) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
 	if err := json.NewEncoder(w).Encode(value); err != nil {
-		log.Printf("failed to write JSON response: %v", err)
+		logError("failed to write JSON response", "error", err)
 	}
 }
 
@@ -978,7 +973,7 @@ func logRequests(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		start := time.Now()
 		next.ServeHTTP(w, r)
-		log.Printf("%s %s %s", r.Method, r.URL.Path, time.Since(start).Round(time.Millisecond))
+		logInfo("HTTP Request", "method", r.Method, "path", r.URL.Path, "duration", time.Since(start).Round(time.Millisecond))
 	})
 }
 
@@ -1043,4 +1038,68 @@ func contentTypeForFormat(format string) string {
 	default:
 		return "audio/mpeg"
 	}
+}
+
+const (
+	ansiReset   = "\033[0m"
+	ansiBold    = "\033[1m"
+	ansiDim     = "\033[2m"
+	ansiRed     = "\033[31m"
+	ansiGreen   = "\033[32m"
+	ansiYellow  = "\033[33m"
+	ansiBlue    = "\033[34m"
+	ansiMagenta = "\033[35m"
+	ansiCyan    = "\033[36m"
+)
+
+type logLevel int
+
+const (
+	levelDebug logLevel = iota
+	levelInfo
+	levelWarn
+	levelError
+)
+
+func logCustom(level logLevel, msg string, keysAndValues ...any) {
+	ts := time.Now().Format("15:04:05.000")
+	fmt.Print(ansiDim + ts + ansiReset + " ")
+
+	var badge string
+	switch level {
+	case levelDebug:
+		badge = ansiBold + ansiMagenta + "• DEBUG" + ansiReset
+	case levelInfo:
+		badge = ansiBold + ansiBlue + "• INFO " + ansiReset
+	case levelWarn:
+		badge = ansiBold + ansiYellow + "• WARN " + ansiReset
+	case levelError:
+		badge = ansiBold + ansiRed + "• ERROR" + ansiReset
+	}
+	fmt.Print(badge + " " + ansiBold + msg + ansiReset)
+
+	for i := 0; i < len(keysAndValues); i += 2 {
+		if i+1 < len(keysAndValues) {
+			k := fmt.Sprintf("%v", keysAndValues[i])
+			v := fmt.Sprintf("%v", keysAndValues[i+1])
+			fmt.Print(" " + ansiDim + k + "=" + ansiReset + ansiCyan + v + ansiReset)
+		}
+	}
+	fmt.Println()
+}
+
+func logInfo(msg string, kv ...any) {
+	logCustom(levelInfo, msg, kv...)
+}
+
+func logDebug(msg string, kv ...any) {
+	logCustom(levelDebug, msg, kv...)
+}
+
+func logWarn(msg string, kv ...any) {
+	logCustom(levelWarn, msg, kv...)
+}
+
+func logError(msg string, kv ...any) {
+	logCustom(levelError, msg, kv...)
 }
