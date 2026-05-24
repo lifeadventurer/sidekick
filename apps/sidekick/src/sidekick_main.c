@@ -14,6 +14,7 @@ static THREAD_HANDLE s_sidekick_thread = NULL;
 static void sidekick_user_main(void)
 {
     OPERATE_RET rt = OPRT_OK;
+    uint32_t    tutor_elapsed_ms = 0;
 
     (void)tal_log_init(TAL_LOG_LEVEL_DEBUG, 2048, (TAL_LOG_OUTPUT_CB)tkl_log_output);
 
@@ -38,8 +39,12 @@ static void sidekick_user_main(void)
 
     while (1) {
         sidekick_ui_poll();
-        sidekick_session_tick();
-        tal_system_sleep(SIDEKICK_TUTOR_TICK_MS);
+        tutor_elapsed_ms += SIDEKICK_UI_POLL_MS;
+        if (tutor_elapsed_ms >= SIDEKICK_TUTOR_TICK_MS) {
+            sidekick_session_tick();
+            tutor_elapsed_ms = 0;
+        }
+        tal_system_sleep(SIDEKICK_UI_POLL_MS);
     }
 }
 
