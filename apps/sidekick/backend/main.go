@@ -24,7 +24,7 @@ import (
 const (
 	defaultPort            = "8787"
 	defaultProvider        = "ollama"
-	defaultOllamaModel     = "llama3.2-vision:11b"
+	defaultOllamaModel     = "sidekick-vision:latest"
 	defaultOllamaChatURL   = "http://localhost:11434/api/chat"
 	defaultMaxImageBytes   = 4 * 1024 * 1024
 	defaultMaxOutputTokens = 80
@@ -819,15 +819,12 @@ func (s *server) analyze(ctx context.Context, mode string, image []byte, priorFr
 }
 
 func (s *server) callOllama(_ context.Context, mode string, image []byte, priorFrames []frameContext, summary bool) (string, error) {
-	messages := []ollamaMessage{{
-		Role:    "system",
-		Content: tutorSystemPrompt(mode, summary),
-	}}
+	messages := make([]ollamaMessage, 0, len(priorFrames)+1)
 
 	imageCount := 0
 	imageBytes := len(image)
 	for idx, frame := range priorFrames {
-		content := fmt.Sprintf("Previous frame %d of %d. Mode=%s. Time=%s. Previous tutor message=%q. Compare this with later frames.",
+		content := fmt.Sprintf("Prior snapshot %d of %d. Mode=%s. Time=%s. Previous tutor message=%q. Use this only as recent visible context for the current request.",
 			idx+1, len(priorFrames), frame.Mode, frame.ObservedAt.Format(time.RFC3339), frame.Message)
 		messages = append(messages, ollamaMessage{
 			Role:    "user",
@@ -841,14 +838,14 @@ func (s *server) callOllama(_ context.Context, mode string, image []byte, priorF
 	if image != nil {
 		messages = append(messages, ollamaMessage{
 			Role:    "user",
-			Content: "Current frame. Compare it with the previous frames, infer progress or lack of motion, and respond with only the tutor message or NO_ACTION.",
+			Content: snapshotPrompt(mode, summary),
 			Images:  []string{base64.StdEncoding.EncodeToString(image)},
 		})
 		imageCount++
 	} else {
 		messages = append(messages, ollamaMessage{
 			Role:    "user",
-			Content: "The session has ended. Use the provided frames in order to summarize progress and the best next step.",
+			Content: snapshotPrompt(mode, summary),
 		})
 	}
 
@@ -958,16 +955,26 @@ func normalizeMode(mode string) string {
 	}
 }
 
-func tutorSystemPrompt(mode string, summary bool) string {
-	base := "You are SideKick, a visual AI tutor watching ordered snapshots from a student's desk. Compare the current frame with prior frames to infer motion, progress, pauses, and possible wrong direction. Respond with one short message suitable for a tiny device screen. Use at most 25 words. Do not explain your reasoning. Do not mention camera frames or images."
+func snapshotPrompt(mode string, summary bool) string {
+	return strings.Join([]string{
+		sidekickSnapshotPrompt(),
+		sidekickModePrompt(mode, summary),
+	}, "\n\n")
+}
+
+func sidekickSnapshotPrompt() string {
+	return "Each picture creates a fresh analysis branch from this same main role. The current request includes the current snapshot and may include recent prior snapshots from the same session. Compare only the provided snapshots to identify visible progress, repeated unchanged work, or clearly visible mistakes. Prior snapshots provide context, not proof of unseen work. For normal frame analysis, return exactly NO_ACTION when no useful visible intervention is justified."
+}
+
+func sidekickModePrompt(mode string, summary bool) string {
 	if summary {
-		return base + " The session has ended. Summarize what the student worked on, visible progress, and one concrete next step. Use at most 40 words in a single brief paragraph. Do not use bullet points. Never return NO_ACTION."
+		return "The session has ended. Summarize only visible work and visible progress, then give one concrete next step. Use at most 40 words in a single brief paragraph. Do not use bullet points. Never return NO_ACTION."
 	}
 	switch mode {
 	case "active":
-		return base + " Active mode: intervene when the student appears stuck, has stopped changing the work, or is writing something incorrect. Otherwise return exactly NO_ACTION."
+		return "Active mode: intervene only when visible evidence shows the student is stuck, has stopped making visible progress, or made a clearly visible mistake. Otherwise return exactly NO_ACTION. If responding, use at most 25 words."
 	default:
-		return base + " Hint mode: stay quiet unless the student is stuck or going the wrong direction. If no hint is necessary, return exactly NO_ACTION."
+		return "Hint mode: stay quiet unless a visible, specific hint would help. If no hint is necessary, return exactly NO_ACTION. If responding, use at most 25 words."
 	}
 }
 
