@@ -3,20 +3,21 @@
 Small local backend for SideKick AI experiments.
 
 The firmware will POST JPEG frames over Wi-Fi to this service. The service calls
-local Ollama for visual tutoring, compares each frame with recent prior frames,
-and returns compact JSON for the device UI.
+OpenAI `gpt-5.5` for visual tutoring, compares each frame with recent prior
+frames, and returns compact JSON for the device UI.
 
 ## Run
 
-Ollama mode, using your local `llama3.2-vision:11b`:
+OpenAI vision mode:
 
 ```bash
-ollama pull llama3.2-vision:11b
 cd apps/sidekick/backend
+cp .env.example .env.local
+# Set OPENAI_API_KEY in .env.local.
 go run .
 ```
 
-Use verbose logs when you want to see what Ollama returned and what the backend
+Use verbose logs when you want to see what the model returned and what the backend
 sent back to the device:
 
 ```bash
@@ -36,9 +37,14 @@ curl -s http://localhost:8787/health
 curl -s -X POST --data-binary @frame.jpg -H 'Content-Type: image/jpeg' 'http://localhost:8787/sidekick/frame?mode=hint&session=demo'
 ```
 
-For the hackathon demo, prefer `llama3.2-vision:11b` over local thinking-heavy
-models. Some thinking models can spend the whole token budget in `thinking` and
-return an empty `message.content`, which the backend treats as a failed analysis.
+The default analyzer uses the OpenAI Responses API with `gpt-5.5` and
+`detail: "auto"` image input, which preserves original-detail images on
+`gpt-5.5` while remaining compatible with alternate OpenAI vision models.
+Ollama remains available as a local fallback:
+
+```bash
+SIDEKICK_AI_PROVIDER=ollama OLLAMA_MODEL=llama3.2-vision:11b go run .
+```
 
 When calling from the board, use the laptop LAN IP instead of `localhost`, for
 example:
@@ -68,9 +74,10 @@ cp .env.example .env.local
 Example `.env.local`:
 
 ```text
-SIDEKICK_TTS_PROVIDER=elevenlabs
-ELEVENLABS_API_KEY=your_api_key_here
-ELEVENLABS_VOICE_ID=your_voice_id_here
+SIDEKICK_AI_PROVIDER=openai
+OPENAI_API_KEY=your_openai_api_key_here
+OPENAI_VISION_MODEL=gpt-5.5
+SIDEKICK_TTS_PROVIDER=none
 ```
 
 Optional environment variables:
@@ -78,15 +85,18 @@ Optional environment variables:
 | Name | Default | Description |
 | --- | --- | --- |
 | `PORT` | `8787` | HTTP listen port |
-| `SIDEKICK_AI_PROVIDER` | `ollama` | `ollama` or `fake` |
+| `SIDEKICK_AI_PROVIDER` | `openai` | `openai`, `ollama`, or `fake` |
+| `OPENAI_API_KEY` | empty | Required for OpenAI image analysis, transcription, or TTS |
+| `OPENAI_VISION_MODEL` | `gpt-5.5` | OpenAI image analysis model |
+| `OPENAI_RESPONSES_URL` | `https://api.openai.com/v1/responses` | OpenAI image analysis endpoint |
 | `OLLAMA_MODEL` | `llama3.2-vision:11b` | Local Ollama vision model |
 | `OLLAMA_CHAT_URL` | `http://localhost:11434/api/chat` | Ollama chat endpoint |
 | `SIDEKICK_MAX_IMAGE_BYTES` | `4194304` | Max uploaded image size |
 | `SIDEKICK_SHARED_SECRET` | empty | Optional bearer token required from firmware |
-| `SIDEKICK_TIMEOUT_SECONDS` | `25` | Upstream Ollama request timeout |
-| `SIDEKICK_MAX_OUTPUT_TOKENS` | `80` | Max tutor response tokens |
+| `SIDEKICK_TIMEOUT_SECONDS` | `45` | Upstream model request timeout |
+| `SIDEKICK_MAX_OUTPUT_TOKENS` | `256` | Max model output tokens, including OpenAI reasoning tokens |
 | `SIDEKICK_CONTEXT_FRAMES` | `1` | Sliding window of recent frames retained per session |
-| `SIDEKICK_AI_FALLBACK` | `1` | Return demo-safe fallback JSON instead of HTTP 502 when Ollama fails (`0` disables) |
+| `SIDEKICK_AI_FALLBACK` | `1` | Return demo-safe fallback JSON instead of HTTP 502 when analysis fails (`0` disables) |
 | `SIDEKICK_VERBOSE` | `0` | Enable verbose model and response logs (`go run . -verbose` overrides this) |
 | `SIDEKICK_CAPTURE_DIR` | `captures` | Directory for incoming JPEG debug dumps (`off` to disable) |
 | `SIDEKICK_STT_PROVIDER` | `elevenlabs` | `elevenlabs`, `openai`, `fake`, or `none` for microphone transcription |
@@ -96,7 +106,6 @@ Optional environment variables:
 | `OPENAI_TRANSCRIPTION_MODEL` | `gpt-4o-mini-transcribe` | OpenAI speech-to-text model |
 | `SIDEKICK_TTS_PROVIDER` | `none` | `none`, `openai`, or `elevenlabs` |
 | `SIDEKICK_TTS_MAX_CHARS` | `600` | Max text length accepted by `/sidekick/tts` |
-| `OPENAI_API_KEY` | empty | Required for OpenAI transcription or `SIDEKICK_TTS_PROVIDER=openai` |
 | `OPENAI_TTS_MODEL` | `gpt-4o-mini-tts` | OpenAI speech model |
 | `OPENAI_TTS_VOICE` | `coral` | Default OpenAI voice |
 | `OPENAI_TTS_FORMAT` | `wav` | Default OpenAI output format |
@@ -143,7 +152,7 @@ Response:
 {
   "mode": "hint",
   "session_id": "demo",
-  "provider": "ollama",
+  "provider": "openai",
   "message": "Check the first visible step before simplifying.",
   "should_respond": true,
   "received_bytes": 12345,
@@ -158,7 +167,7 @@ API response has an empty message:
 {
   "mode": "hint",
   "session_id": "demo",
-  "provider": "ollama",
+  "provider": "openai",
   "message": "",
   "should_respond": false,
   "received_bytes": 12345,

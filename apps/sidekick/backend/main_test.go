@@ -20,15 +20,18 @@ import (
 
 func testServer() *server {
 	return newServer(config{
-		Provider:         "fake",
-		OllamaModel:      defaultOllamaModel,
-		OllamaChatURL:    defaultOllamaChatURL,
-		MaxImageBytes:    defaultMaxImageBytes,
-		RequestTimeout:   2 * time.Second,
-		DefaultImageMIME: "image/jpeg",
-		AllowMultipart:   true,
-		MaxOutputTokens:  120,
-		ContextFrames:    2,
+		Provider:           "fake",
+		OllamaModel:        defaultOllamaModel,
+		OllamaChatURL:      defaultOllamaChatURL,
+		OpenAIAPIKey:       "openai-test-key",
+		OpenAIResponsesURL: defaultOpenAIResponsesURL,
+		OpenAIVisionModel:  defaultOpenAIVisionModel,
+		MaxImageBytes:      defaultMaxImageBytes,
+		RequestTimeout:     2 * time.Second,
+		DefaultImageMIME:   "image/jpeg",
+		AllowMultipart:     true,
+		MaxOutputTokens:    120,
+		ContextFrames:      2,
 		TTS: ttsConfig{
 			Provider:               "none",
 			MaxChars:               defaultMaxTTSChars,
@@ -217,6 +220,72 @@ func TestFrameOllamaProvider(t *testing.T) {
 	}
 	if !parsed.ShouldRespond {
 		t.Fatal("expected should_respond=true")
+	}
+}
+
+func TestFrameOpenAIProviderUsesVisionInput(t *testing.T) {
+	srv := testServer()
+	srv.cfg.Provider = "openai"
+	srv.cfg.OpenAIResponsesURL = "https://openai.test/v1/responses"
+	srv.client = &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		if r.Method != http.MethodPost {
+			t.Fatalf("expected POST, got %s", r.Method)
+		}
+		if r.URL.String() != srv.cfg.OpenAIResponsesURL {
+			t.Fatalf("expected URL %q, got %q", srv.cfg.OpenAIResponsesURL, r.URL.String())
+		}
+		if r.Header.Get("Authorization") != "Bearer openai-test-key" {
+			t.Fatalf("missing OpenAI authorization header")
+		}
+
+		var payload openAIResponsesRequest
+		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+			return nil, err
+		}
+		if payload.Model != defaultOpenAIVisionModel {
+			t.Fatalf("expected model %q, got %q", defaultOpenAIVisionModel, payload.Model)
+		}
+		if payload.Store {
+			t.Fatal("expected responses storage to be disabled")
+		}
+		if len(payload.Input) != 1 || len(payload.Input[0].Content) != 2 {
+			t.Fatalf("expected one text/image message, got %+v", payload.Input)
+		}
+		image := payload.Input[0].Content[1]
+		if image.Type != "input_image" || image.Detail != "auto" {
+			t.Fatalf("expected auto-detail image input, got %+v", image)
+		}
+		if !strings.HasPrefix(image.ImageURL, "data:image/jpeg;base64,") {
+			t.Fatalf("expected JPEG data URL, got %q", image.ImageURL)
+		}
+
+		body := []byte(`{"status":"completed","output":[{"type":"message","content":[{"type":"output_text","text":"Check the sign before you simplify."}]}]}`)
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Header:     make(http.Header),
+			Body:       io.NopCloser(bytes.NewReader(body)),
+		}, nil
+	})}
+
+	req := httptest.NewRequest(http.MethodPost, "/sidekick/frame?mode=hint", bytes.NewReader([]byte{0xff, 0xd8, 0xff, 0xd9}))
+	req.Header.Set("Content-Type", "image/jpeg")
+	rec := httptest.NewRecorder()
+
+	srv.handleFrame(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected %d, got %d body=%s", http.StatusOK, rec.Code, rec.Body.String())
+	}
+
+	var parsed sidekickResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &parsed); err != nil {
+		t.Fatal(err)
+	}
+	if parsed.Provider != "openai" {
+		t.Fatalf("expected openai provider, got %q", parsed.Provider)
+	}
+	if parsed.Message != "Check the sign before you simplify." || !parsed.ShouldRespond {
+		t.Fatalf("unexpected response %+v", parsed)
 	}
 }
 

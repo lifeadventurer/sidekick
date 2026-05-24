@@ -36,7 +36,8 @@ uv run python ../../tos.py build
 Priority: defaults → `.env.example` → `.env` → `.env.local` → shell `export SIDEKICK_*`.
 
 `SIDEKICK_BACKEND_HOST` must be your Mac’s LAN IP (not `localhost`). The Go
-backend still uses `apps/sidekick/backend/.env.local` for Ollama/TTS.
+backend uses `apps/sidekick/backend/.env.local` for OpenAI image analysis and
+optional TTS.
 
 ## Build
 

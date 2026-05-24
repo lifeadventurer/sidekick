@@ -10,13 +10,13 @@ import (
 
 const (
 	defaultPort            = "8787"
-	defaultProvider        = "ollama"
+	defaultProvider        = "openai"
 	defaultOllamaModel     = "llama3.2-vision:11b"
 	defaultOllamaChatURL   = "http://localhost:11434/api/chat"
 	defaultMaxImageBytes   = 4 * 1024 * 1024
-	defaultMaxOutputTokens = 80
+	defaultMaxOutputTokens = 256
 	defaultContextFrames   = 1
-	defaultRequestTimeout  = 25
+	defaultRequestTimeout  = 45
 	defaultSessionID       = "default"
 	defaultTTSProvider     = "none"
 	defaultMaxTTSChars     = 600
@@ -31,6 +31,8 @@ const (
 
 	defaultOpenAITranscriptionURL   = "https://api.openai.com/v1/audio/transcriptions"
 	defaultOpenAITranscriptionModel = "gpt-4o-mini-transcribe"
+	defaultOpenAIResponsesURL       = "https://api.openai.com/v1/responses"
+	defaultOpenAIVisionModel        = "gpt-5.5"
 
 	defaultElevenLabsSTTURL   = "https://api.elevenlabs.io/v1/speech-to-text"
 	defaultElevenLabsSTTModel = "scribe_v2"
@@ -41,22 +43,25 @@ const (
 )
 
 type config struct {
-	Port              string
-	Provider          string
-	OllamaModel       string
-	OllamaChatURL     string
-	MaxImageBytes     int64
-	SharedSecret      string
-	RequestTimeout    time.Duration
-	MaxOutputTokens   int
-	ContextFrames     int
-	FallbackOnAIError bool
-	Verbose           bool
-	AllowMultipart    bool
-	DefaultImageMIME  string
-	CaptureDir        string
-	TTS               ttsConfig
-	STT               sttConfig
+	Port               string
+	Provider           string
+	OllamaModel        string
+	OllamaChatURL      string
+	OpenAIAPIKey       string
+	OpenAIResponsesURL string
+	OpenAIVisionModel  string
+	MaxImageBytes      int64
+	SharedSecret       string
+	RequestTimeout     time.Duration
+	MaxOutputTokens    int
+	ContextFrames      int
+	FallbackOnAIError  bool
+	Verbose            bool
+	AllowMultipart     bool
+	DefaultImageMIME   string
+	CaptureDir         string
+	TTS                ttsConfig
+	STT                sttConfig
 }
 
 type ttsConfig struct {
@@ -91,20 +96,23 @@ func loadConfig() config {
 	provider := getenv("SIDEKICK_AI_PROVIDER", defaultProvider)
 
 	return config{
-		Port:              getenv("PORT", defaultPort),
-		Provider:          strings.ToLower(provider),
-		OllamaModel:       getenv("OLLAMA_MODEL", defaultOllamaModel),
-		OllamaChatURL:     getenv("OLLAMA_CHAT_URL", defaultOllamaChatURL),
-		MaxImageBytes:     getenvInt64("SIDEKICK_MAX_IMAGE_BYTES", defaultMaxImageBytes),
-		SharedSecret:      os.Getenv("SIDEKICK_SHARED_SECRET"),
-		RequestTimeout:    time.Duration(getenvInt64("SIDEKICK_TIMEOUT_SECONDS", defaultRequestTimeout)) * time.Second,
-		MaxOutputTokens:   int(getenvInt64("SIDEKICK_MAX_OUTPUT_TOKENS", defaultMaxOutputTokens)),
-		ContextFrames:     int(getenvInt64("SIDEKICK_CONTEXT_FRAMES", defaultContextFrames)),
-		FallbackOnAIError: getenvBool("SIDEKICK_AI_FALLBACK", true),
-		Verbose:           getenvBool("SIDEKICK_VERBOSE", false),
-		AllowMultipart:    getenv("SIDEKICK_ALLOW_MULTIPART", "1") != "0",
-		DefaultImageMIME:  getenv("SIDEKICK_IMAGE_MIME", "image/jpeg"),
-		CaptureDir:        loadCaptureDir(),
+		Port:               getenv("PORT", defaultPort),
+		Provider:           strings.ToLower(provider),
+		OllamaModel:        getenv("OLLAMA_MODEL", defaultOllamaModel),
+		OllamaChatURL:      getenv("OLLAMA_CHAT_URL", defaultOllamaChatURL),
+		OpenAIAPIKey:       os.Getenv("OPENAI_API_KEY"),
+		OpenAIResponsesURL: getenv("OPENAI_RESPONSES_URL", defaultOpenAIResponsesURL),
+		OpenAIVisionModel:  getenv("OPENAI_VISION_MODEL", defaultOpenAIVisionModel),
+		MaxImageBytes:      getenvInt64("SIDEKICK_MAX_IMAGE_BYTES", defaultMaxImageBytes),
+		SharedSecret:       os.Getenv("SIDEKICK_SHARED_SECRET"),
+		RequestTimeout:     time.Duration(getenvInt64("SIDEKICK_TIMEOUT_SECONDS", defaultRequestTimeout)) * time.Second,
+		MaxOutputTokens:    int(getenvInt64("SIDEKICK_MAX_OUTPUT_TOKENS", defaultMaxOutputTokens)),
+		ContextFrames:      int(getenvInt64("SIDEKICK_CONTEXT_FRAMES", defaultContextFrames)),
+		FallbackOnAIError:  getenvBool("SIDEKICK_AI_FALLBACK", true),
+		Verbose:            getenvBool("SIDEKICK_VERBOSE", false),
+		AllowMultipart:     getenv("SIDEKICK_ALLOW_MULTIPART", "1") != "0",
+		DefaultImageMIME:   getenv("SIDEKICK_IMAGE_MIME", "image/jpeg"),
+		CaptureDir:         loadCaptureDir(),
 		TTS: ttsConfig{
 			Provider:               strings.ToLower(getenv("SIDEKICK_TTS_PROVIDER", defaultTTSProvider)),
 			MaxChars:               int(getenvInt64("SIDEKICK_TTS_MAX_CHARS", defaultMaxTTSChars)),
@@ -132,6 +140,13 @@ func loadConfig() config {
 			Language:         getenv("SIDEKICK_STT_LANGUAGE", getenv("OPENAI_TRANSCRIPTION_LANGUAGE", "en")),
 		},
 	}
+}
+
+func (c config) analysisModel() string {
+	if c.Provider == "openai" {
+		return c.OpenAIVisionModel
+	}
+	return c.OllamaModel
 }
 
 func loadLocalEnv() {

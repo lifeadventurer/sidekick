@@ -10,8 +10,11 @@ func main() {
 	log.SetFlags(0)
 	loadLocalEnv()
 	cfg := loadConfig()
-	flag.BoolVar(&cfg.Verbose, "verbose", cfg.Verbose, "print verbose Ollama and response logs")
+	flag.BoolVar(&cfg.Verbose, "verbose", cfg.Verbose, "print verbose analysis and response logs")
 	flag.Parse()
+	if cfg.Provider == "openai" && cfg.OpenAIAPIKey == "" {
+		logWarn("OPENAI_API_KEY is not set; OpenAI image analysis requests will fail")
+	}
 	srv := newServer(cfg)
 	srv.loadTTSFromDisk()
 
@@ -23,6 +26,6 @@ func main() {
 	mux.HandleFunc("POST /sidekick/tts", srv.handleTTS)
 
 	addr := ":" + cfg.Port
-	logInfo("SideKick backend listening", "addr", addr, "provider", cfg.Provider, "model", cfg.OllamaModel, "verbose", cfg.Verbose)
+	logInfo("SideKick backend listening", "addr", addr, "provider", cfg.Provider, "model", cfg.analysisModel(), "verbose", cfg.Verbose)
 	log.Fatal(http.ListenAndServe(addr, logRequests(mux)))
 }

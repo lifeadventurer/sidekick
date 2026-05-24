@@ -14,7 +14,7 @@ func (s *server) handleHealth(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{
 		"ok":       true,
 		"provider": s.cfg.Provider,
-		"model":    s.cfg.OllamaModel,
+		"model":    s.cfg.analysisModel(),
 		"context":  s.cfg.ContextFrames,
 		"tts":      s.cfg.TTS.Provider,
 	})
