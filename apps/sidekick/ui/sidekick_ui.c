@@ -35,6 +35,7 @@
 #define SIDEKICK_MODE_COUNT           3
 #define SIDEKICK_INTERVAL_COUNT       4
 #define SIDEKICK_INTERVAL_LABEL_CHARS 3
+#define SIDEKICK_INTERVAL_TITLE_CHARS 8
 #define SIDEKICK_SESSION_END_GRACE_MS 3000
 
 typedef enum {
@@ -173,6 +174,7 @@ static const uint8_t *sidekick_ui_glyph(char letter)
     static const uint8_t glyph_e[7] = {0x1F, 0x10, 0x10, 0x1E, 0x10, 0x10, 0x1F};
     static const uint8_t glyph_i[7] = {0x1F, 0x04, 0x04, 0x04, 0x04, 0x04, 0x1F};
     static const uint8_t glyph_k[7] = {0x11, 0x12, 0x14, 0x18, 0x14, 0x12, 0x11};
+    static const uint8_t glyph_l[7] = {0x10, 0x10, 0x10, 0x10, 0x10, 0x10, 0x1F};
     static const uint8_t glyph_m[7] = {0x11, 0x1B, 0x15, 0x11, 0x11, 0x11, 0x11};
     static const uint8_t glyph_p[7] = {0x1E, 0x11, 0x11, 0x1E, 0x10, 0x10, 0x10};
     static const uint8_t glyph_r[7] = {0x1E, 0x11, 0x11, 0x1E, 0x14, 0x12, 0x11};
@@ -210,6 +212,8 @@ static const uint8_t *sidekick_ui_glyph(char letter)
         return glyph_i;
     case 'K':
         return glyph_k;
+    case 'L':
+        return glyph_l;
     case 'M':
         return glyph_m;
     case 'N':
@@ -384,15 +388,18 @@ static void sidekick_ui_draw_back_icon(uint16_t x, uint16_t y, uint16_t size, ui
 {
     OPERATE_RET rt   = OPRT_OK;
     uint16_t    unit = size / 8;
+    uint16_t    nudge;
 
     if (unit == 0) {
         unit = 1;
     }
 
-    TUYA_CALL_ERR_LOG(sidekick_ui_fill_rect(x + unit, y + unit * 3, unit * 5, unit * 2, color));
-    TUYA_CALL_ERR_LOG(sidekick_ui_fill_rect(x + unit * 2, y + unit, unit, unit * 6, color));
-    TUYA_CALL_ERR_LOG(sidekick_ui_fill_rect(x + unit * 3, y + unit * 2, unit, unit, color));
-    TUYA_CALL_ERR_LOG(sidekick_ui_fill_rect(x + unit * 3, y + unit * 5, unit, unit, color));
+    nudge = (unit > 2) ? 4 : 3;
+
+    TUYA_CALL_ERR_LOG(sidekick_ui_fill_rect(x + unit * 2, y + unit * 3, unit * 5, unit * 2, color));
+    TUYA_CALL_ERR_LOG(sidekick_ui_fill_rect(x + unit * 5 - nudge, y + unit, unit, unit * 6, color));
+    TUYA_CALL_ERR_LOG(sidekick_ui_fill_rect(x + unit * 4 - nudge, y + unit * 2, unit, unit, color));
+    TUYA_CALL_ERR_LOG(sidekick_ui_fill_rect(x + unit * 4 - nudge, y + unit * 5, unit, unit, color));
 }
 
 static void sidekick_ui_draw_speaker_icon(uint16_t x, uint16_t y, uint16_t size, uint32_t color)
@@ -749,6 +756,7 @@ static OPERATE_RET sidekick_ui_draw_settings_screen(void)
     uint16_t    option_h;
     uint16_t    option_gap;
     uint16_t    unit;
+    uint16_t    title_y;
     uint32_t    selected_interval = sidekick_session_frame_interval_sec();
 
     sidekick_ui_settings_layout(&back_x, &back_y, &back_size, &home_x, &home_y, &home_size, &option_x, &option_y,
@@ -775,6 +783,11 @@ static OPERATE_RET sidekick_ui_draw_settings_screen(void)
         sidekick_ui_draw_centered_text(s_interval_labels[i], SIDEKICK_INTERVAL_LABEL_CHARS, rect_x, rect_y, option_w,
                                        option_h, unit, fg);
     }
+
+    title_y = option_y + option_h * 2 + option_gap + option_gap;
+    sidekick_ui_draw_centered_text("INTERVAL", SIDEKICK_INTERVAL_TITLE_CHARS, option_x, title_y,
+                                   s_canvas_width - option_x * 2, option_h / 2, SIDEKICK_LABEL_UNIT,
+                                   SIDEKICK_COLOR_DIM);
 
     return sidekick_ui_present();
 }
