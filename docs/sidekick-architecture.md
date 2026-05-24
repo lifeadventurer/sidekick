@@ -17,23 +17,49 @@ apps/sidekick/
   tutor/                   Tutor session state and orchestration
 ```
 
-## Component Interaction Graph
+## System Components
 
 ```mermaid
 flowchart LR
-    User["Student"] --> Board["T5AI board firmware<br/>UI, tutor state, camera, audio"]
-    Board -->|JPEG frames + session events<br/>Wi-Fi HTTP| Backend["Go backend :8787"]
-    Backend -->|current + recent frames| Ollama["Ollama vision model"]
-    Ollama -->|NO_ACTION or tutor hint| Backend
-    Backend -->|JSON response<br/>should_respond + message| Board
-    Backend -->|optional speech synthesis| TTS["TTS provider<br/>OpenAI or ElevenLabs"]
-    TTS -->|PCM/WAV audio| Backend
-    Board -->|speaker output| User
+    subgraph Board["T5AI board"]
+        UI["UI + touch"]
+        Tutor["Tutor session state"]
+        Camera["Camera"]
+        Audio["Speaker / microphone"]
+        Client["Firmware HTTP client"]
+    end
+
+    subgraph Backend["Laptop backend"]
+        Server["Go server :8787"]
+        Routes["Frame, session, TTS routes"]
+        Cache["Optional TTS cache"]
+    end
+
+    subgraph Services["AI / speech services"]
+        Vision["Ollama vision"]
+        Speech["OpenAI or ElevenLabs TTS"]
+    end
+
+    subgraph Config["Build-time config"]
+        Env[".env.local"]
+        Header["generated device config"]
+    end
+
+    Env --> Header
+    Header --> Client
+    UI --> Tutor
+    Tutor --> Camera
+    Camera --> Client
+    Client --> Server
+    Server --> Routes
+    Server --> Vision
+    Server --> Speech
+    Server --> Cache
+    Client --> Audio
 ```
 
-Build-time config still comes from `.env.local` and generated headers. Backend
-routes, provider options, and defaults are listed below in Fact-Checked Defaults.
-The image-processing loop is expanded in the Sequential Workflow.
+Use this graph to identify the main parts of the system. The next section shows
+the runtime sequence from image capture to AI decision and audio playback.
 
 ## Sequential Workflow
 
