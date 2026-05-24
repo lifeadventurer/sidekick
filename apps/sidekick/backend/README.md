@@ -16,6 +16,13 @@ cd apps/sidekick/backend
 go run .
 ```
 
+Use verbose logs when you want to see what Ollama returned and what the backend
+sent back to the device:
+
+```bash
+go run . -verbose
+```
+
 The server listens on:
 
 ```text
@@ -80,6 +87,7 @@ Optional environment variables:
 | `SIDEKICK_MAX_OUTPUT_TOKENS` | `80` | Max tutor response tokens |
 | `SIDEKICK_CONTEXT_FRAMES` | `1` | Sliding window of recent frames retained per session |
 | `SIDEKICK_AI_FALLBACK` | `1` | Return demo-safe fallback JSON instead of HTTP 502 when Ollama fails (`0` disables) |
+| `SIDEKICK_VERBOSE` | `0` | Enable verbose model and response logs (`go run . -verbose` overrides this) |
 | `SIDEKICK_CAPTURE_DIR` | `captures` | Directory for incoming JPEG debug dumps (`off` to disable) |
 | `SIDEKICK_TTS_PROVIDER` | `none` | `none`, `openai`, or `elevenlabs` |
 | `SIDEKICK_TTS_MAX_CHARS` | `600` | Max text length accepted by `/sidekick/tts` |

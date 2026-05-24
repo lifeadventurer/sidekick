@@ -6,6 +6,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"flag"
 	"fmt"
 	"io"
 	"log"
@@ -54,6 +55,7 @@ type config struct {
 	MaxOutputTokens   int
 	ContextFrames     int
 	FallbackOnAIError bool
+	Verbose           bool
 	AllowMultipart    bool
 	DefaultImageMIME  string
 	CaptureDir        string
@@ -118,6 +120,8 @@ type ttsRequest struct {
 func main() {
 	loadLocalEnv()
 	cfg := loadConfig()
+	flag.BoolVar(&cfg.Verbose, "verbose", cfg.Verbose, "print verbose Ollama and response logs")
+	flag.Parse()
 	srv := newServer(cfg)
 
 	mux := http.NewServeMux()
@@ -127,7 +131,7 @@ func main() {
 	mux.HandleFunc("POST /sidekick/tts", srv.handleTTS)
 
 	addr := ":" + cfg.Port
-	log.Printf("SideKick backend listening on %s provider=%s model=%s", addr, cfg.Provider, cfg.OllamaModel)
+	log.Printf("SideKick backend listening on %s provider=%s model=%s verbose=%t", addr, cfg.Provider, cfg.OllamaModel, cfg.Verbose)
 	log.Fatal(http.ListenAndServe(addr, logRequests(mux)))
 }
 
@@ -144,7 +148,8 @@ func loadConfig() config {
 		RequestTimeout:    time.Duration(getenvInt64("SIDEKICK_TIMEOUT_SECONDS", defaultRequestTimeout)) * time.Second,
 		MaxOutputTokens:   int(getenvInt64("SIDEKICK_MAX_OUTPUT_TOKENS", defaultMaxOutputTokens)),
 		ContextFrames:     int(getenvInt64("SIDEKICK_CONTEXT_FRAMES", defaultContextFrames)),
-		FallbackOnAIError: getenv("SIDEKICK_AI_FALLBACK", "1") != "0",
+		FallbackOnAIError: getenvBool("SIDEKICK_AI_FALLBACK", true),
+		Verbose:           getenvBool("SIDEKICK_VERBOSE", false),
 		AllowMultipart:    getenv("SIDEKICK_ALLOW_MULTIPART", "1") != "0",
 		DefaultImageMIME:  getenv("SIDEKICK_IMAGE_MIME", "image/jpeg"),
 		CaptureDir:        loadCaptureDir(),
@@ -271,6 +276,11 @@ func (s *server) handleFrame(w http.ResponseWriter, r *http.Request) {
 		ObservedAt:    time.Now(),
 	})
 
+	if s.cfg.Verbose {
+		log.Printf("frame result session=%s provider=%s mode=%s should_respond=%t message=%q",
+			sessionID, provider, mode, shouldRespond, message)
+	}
+
 	writeJSON(w, http.StatusOK, sidekickResponse{
 		Mode:          mode,
 		SessionID:     sessionID,
@@ -303,6 +313,11 @@ func (s *server) handleSessionEnd(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.clearSession(sessionID)
+
+	if s.cfg.Verbose {
+		log.Printf("summary result session=%s provider=%s should_respond=%t message=%q",
+			sessionID, provider, shouldRespond, message)
+	}
 
 	writeJSON(w, http.StatusOK, sidekickResponse{
 		Mode:          "summary",
@@ -590,8 +605,10 @@ func (s *server) callOllama(_ context.Context, mode string, image []byte, priorF
 	ollamaCtx, cancel := context.WithTimeout(context.Background(), s.cfg.RequestTimeout)
 	defer cancel()
 
-	log.Printf("ollama request model=%s mode=%s summary=%t images=%d image_bytes=%d payload_bytes=%d",
-		s.cfg.OllamaModel, mode, summary, imageCount, imageBytes, len(body))
+	if s.cfg.Verbose {
+		log.Printf("ollama request model=%s mode=%s summary=%t images=%d image_bytes=%d payload_bytes=%d",
+			s.cfg.OllamaModel, mode, summary, imageCount, imageBytes, len(body))
+	}
 
 	start := time.Now()
 	req, err := http.NewRequestWithContext(ollamaCtx, http.MethodPost, s.cfg.OllamaChatURL, bytes.NewReader(body))
@@ -614,8 +631,10 @@ func (s *server) callOllama(_ context.Context, mode string, image []byte, priorF
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		return "", fmt.Errorf("Ollama returned HTTP %d: %s", resp.StatusCode, string(respBody))
 	}
-	log.Printf("ollama response model=%s mode=%s latency=%s response_bytes=%d",
-		s.cfg.OllamaModel, mode, time.Since(start).Round(time.Millisecond), len(respBody))
+	if s.cfg.Verbose {
+		log.Printf("ollama response model=%s mode=%s latency=%s response_bytes=%d",
+			s.cfg.OllamaModel, mode, time.Since(start).Round(time.Millisecond), len(respBody))
+	}
 
 	var parsed ollamaChatResponse
 	if err := json.Unmarshal(respBody, &parsed); err != nil {
@@ -626,6 +645,10 @@ func (s *server) callOllama(_ context.Context, mode string, image []byte, priorF
 	}
 
 	text := cleanModelText(parsed.Message.Content)
+	if s.cfg.Verbose {
+		log.Printf("ollama raw message=%q thinking_bytes=%d done_reason=%s",
+			text, len(parsed.Message.Thinking), firstNonEmpty(parsed.DoneReason, "unknown"))
+	}
 	if text == "" {
 		if strings.TrimSpace(parsed.Message.Thinking) != "" {
 			return "", fmt.Errorf("Ollama response did not include message content; model returned thinking only (done_reason=%s thinking_bytes=%d). Use a non-thinking vision model such as llama3.2-vision:11b or raise SIDEKICK_MAX_OUTPUT_TOKENS.",
@@ -855,6 +878,21 @@ func getenvInt64(name string, fallback int64) int64 {
 		return fallback
 	}
 	return parsed
+}
+
+func getenvBool(name string, fallback bool) bool {
+	value := strings.ToLower(strings.TrimSpace(os.Getenv(name)))
+	if value == "" {
+		return fallback
+	}
+	switch value {
+	case "1", "true", "yes", "on":
+		return true
+	case "0", "false", "no", "off":
+		return false
+	default:
+		return fallback
+	}
 }
 
 func firstNonEmpty(values ...string) string {
