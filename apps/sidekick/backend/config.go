@@ -15,7 +15,7 @@ const (
 	defaultOllamaChatURL   = "http://localhost:11434/api/chat"
 	defaultMaxImageBytes   = 4 * 1024 * 1024
 	defaultMaxOutputTokens = 256
-	defaultContextFrames   = 1
+	defaultContextFrames   = 3
 	defaultRequestTimeout  = 45
 	defaultSessionID       = "default"
 	defaultTTSProvider     = "none"
