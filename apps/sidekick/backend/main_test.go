@@ -23,6 +23,9 @@ func testServer() *server {
 		Provider:         "fake",
 		OllamaModel:      defaultOllamaModel,
 		OllamaChatURL:    defaultOllamaChatURL,
+		OpenAIAPIKey:     "openai-test-key",
+		OpenAIURL:        defaultOpenAIResponsesURL,
+		OpenAIModel:      defaultOpenAIResponsesModel,
 		MaxImageBytes:    defaultMaxImageBytes,
 		RequestTimeout:   2 * time.Second,
 		DefaultImageMIME: "image/jpeg",
@@ -171,14 +174,23 @@ func TestFrameOllamaProvider(t *testing.T) {
 		if payload.Think {
 			t.Fatal("expected think=false request")
 		}
-		if len(payload.Messages) != 1 {
-			t.Fatalf("expected current snapshot message only, got %d", len(payload.Messages))
+		if len(payload.Messages) != 2 {
+			t.Fatalf("expected system and current snapshot messages, got %d", len(payload.Messages))
 		}
-		if payload.Messages[0].Role == "system" {
-			t.Fatal("expected no per-request system message")
+		if payload.Messages[0].Role != "system" {
+			t.Fatalf("expected system prompt message, got %q", payload.Messages[0].Role)
 		}
-		if len(payload.Messages[0].Images) != 1 {
-			t.Fatalf("expected 1 image, got %d", len(payload.Messages[0].Images))
+		if !strings.Contains(payload.Messages[0].Content, "SideKick") {
+			t.Fatalf("system prompt missing SideKick identity: %q", payload.Messages[0].Content)
+		}
+		if strings.Contains(payload.Messages[0].Content, "Hint mode") || strings.Contains(payload.Messages[0].Content, "Active mode") {
+			t.Fatalf("system prompt should not include mode-specific snapshot rules: %q", payload.Messages[0].Content)
+		}
+		if !strings.Contains(payload.Messages[1].Content, "Hint mode") {
+			t.Fatalf("current snapshot prompt missing mode rules: %q", payload.Messages[1].Content)
+		}
+		if len(payload.Messages[1].Images) != 1 {
+			t.Fatalf("expected 1 image, got %d", len(payload.Messages[1].Images))
 		}
 
 		body, err := json.Marshal(ollamaChatResponse{
@@ -214,6 +226,95 @@ func TestFrameOllamaProvider(t *testing.T) {
 	}
 	if parsed.Provider != "ollama" {
 		t.Fatalf("expected ollama provider, got %q", parsed.Provider)
+	}
+	if parsed.Message != "Check the sign before you simplify." {
+		t.Fatalf("unexpected message %q", parsed.Message)
+	}
+	if !parsed.ShouldRespond {
+		t.Fatal("expected should_respond=true")
+	}
+}
+
+func TestFrameOpenAIProvider(t *testing.T) {
+	srv := testServer()
+	srv.cfg.Provider = "openai"
+	srv.cfg.OpenAIURL = "https://openai.test/v1/responses"
+	srv.client = &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		if r.Method != http.MethodPost {
+			t.Fatalf("expected POST, got %s", r.Method)
+		}
+		if r.URL.String() != srv.cfg.OpenAIURL {
+			t.Fatalf("expected URL %q, got %q", srv.cfg.OpenAIURL, r.URL.String())
+		}
+		if r.Header.Get("Authorization") != "Bearer openai-test-key" {
+			t.Fatalf("missing OpenAI authorization header")
+		}
+
+		var payload openAIResponsesRequest
+		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+			return nil, err
+		}
+		if payload.Model != defaultOpenAIResponsesModel {
+			t.Fatalf("expected model %q, got %q", defaultOpenAIResponsesModel, payload.Model)
+		}
+		if !strings.Contains(payload.Instructions, "You are SideKick") {
+			t.Fatalf("expected SideKick instructions, got %q", payload.Instructions)
+		}
+		if strings.Contains(payload.Instructions, "Hint mode") || strings.Contains(payload.Instructions, "Active mode") {
+			t.Fatalf("OpenAI instructions should not include mode-specific snapshot rules: %q", payload.Instructions)
+		}
+		if len(payload.Input) != 1 {
+			t.Fatalf("expected current image input only, got %d", len(payload.Input))
+		}
+		if len(payload.Input[0].Content) != 2 {
+			t.Fatalf("expected text and image content, got %d", len(payload.Input[0].Content))
+		}
+		if payload.Input[0].Content[0].Type != "input_text" {
+			t.Fatalf("expected input_text, got %q", payload.Input[0].Content[0].Type)
+		}
+		if !strings.Contains(payload.Input[0].Content[0].Text, "Hint mode") {
+			t.Fatalf("current snapshot prompt missing mode rules: %q", payload.Input[0].Content[0].Text)
+		}
+		if !strings.Contains(payload.Input[0].Content[0].Text, "Current workspace snapshot") {
+			t.Fatalf("current snapshot prompt missing snapshot context: %q", payload.Input[0].Content[0].Text)
+		}
+		if payload.Input[0].Content[1].Type != "input_image" {
+			t.Fatalf("expected input_image, got %q", payload.Input[0].Content[1].Type)
+		}
+		if !strings.HasPrefix(payload.Input[0].Content[1].ImageURL, "data:image/jpeg;base64,") {
+			t.Fatalf("expected image data URL, got %q", payload.Input[0].Content[1].ImageURL)
+		}
+
+		body, err := json.Marshal(openAIResponsesResponse{
+			OutputText: "Check the sign before you simplify.",
+		})
+		if err != nil {
+			return nil, err
+		}
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Header:     make(http.Header),
+			Body:       io.NopCloser(bytes.NewReader(body)),
+		}, nil
+	})}
+
+	body := []byte{0xff, 0xd8, 0xff, 0xd9}
+	req := httptest.NewRequest(http.MethodPost, "/sidekick/frame?mode=hint", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "image/jpeg")
+	rec := httptest.NewRecorder()
+
+	srv.handleFrame(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected %d, got %d body=%s", http.StatusOK, rec.Code, rec.Body.String())
+	}
+
+	var parsed sidekickResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &parsed); err != nil {
+		t.Fatal(err)
+	}
+	if parsed.Provider != "openai" {
+		t.Fatalf("expected openai provider, got %q", parsed.Provider)
 	}
 	if parsed.Message != "Check the sign before you simplify." {
 		t.Fatalf("unexpected message %q", parsed.Message)
@@ -603,15 +704,13 @@ func TestOllamaUsesPriorFrameContext(t *testing.T) {
 			return nil, err
 		}
 		if requestCount == 2 {
-			if len(payload.Messages) != 2 {
-				t.Fatalf("expected previous and current snapshot messages; got %d", len(payload.Messages))
+			if len(payload.Messages) != 3 {
+				t.Fatalf("expected system, previous, and current snapshot messages; got %d", len(payload.Messages))
 			}
-			for idx, message := range payload.Messages {
-				if message.Role == "system" {
-					t.Fatalf("message %d unexpectedly used system role", idx)
-				}
+			if payload.Messages[0].Role != "system" {
+				t.Fatalf("expected system prompt message, got %q", payload.Messages[0].Role)
 			}
-			if len(payload.Messages[0].Images) != 1 || len(payload.Messages[1].Images) != 1 {
+			if len(payload.Messages[1].Images) != 1 || len(payload.Messages[2].Images) != 1 {
 				t.Fatalf("expected previous and current images in second request")
 			}
 		}
@@ -619,6 +718,74 @@ func TestOllamaUsesPriorFrameContext(t *testing.T) {
 		body, err := json.Marshal(ollamaChatResponse{
 			Message: ollamaMessage{Role: "assistant", Content: "Keep checking the next step."},
 		})
+		if err != nil {
+			return nil, err
+		}
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Header:     make(http.Header),
+			Body:       io.NopCloser(bytes.NewReader(body)),
+		}, nil
+	})}
+
+	for idx := 0; idx < 2; idx++ {
+		req := httptest.NewRequest(http.MethodPost, "/sidekick/frame?mode=active&session=abc", bytes.NewReader([]byte{byte(idx + 1)}))
+		req.Header.Set("Content-Type", "image/jpeg")
+		rec := httptest.NewRecorder()
+
+		srv.handleFrame(rec, req)
+
+		if rec.Code != http.StatusOK {
+			t.Fatalf("frame %d expected %d, got %d body=%s", idx, http.StatusOK, rec.Code, rec.Body.String())
+		}
+	}
+}
+
+func TestOpenAIUsesPriorFrameContext(t *testing.T) {
+	srv := testServer()
+	srv.cfg.Provider = "openai"
+	srv.cfg.OpenAIURL = "https://openai.test/v1/responses"
+
+	requestCount := 0
+	srv.client = &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		requestCount++
+		var payload openAIResponsesRequest
+		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+			return nil, err
+		}
+		if requestCount == 2 {
+			if len(payload.Input) != 2 {
+				t.Fatalf("expected previous and current workspace image inputs; got %d", len(payload.Input))
+			}
+			if !strings.Contains(payload.Instructions, "You are SideKick") {
+				t.Fatalf("expected SideKick instructions, got %q", payload.Instructions)
+			}
+			if strings.Contains(payload.Instructions, "Active mode") {
+				t.Fatalf("OpenAI instructions should not include mode-specific snapshot rules: %q", payload.Instructions)
+			}
+			for idx, input := range payload.Input {
+				if input.Role != "user" {
+					t.Fatalf("input %d expected user role, got %q", idx, input.Role)
+				}
+				if len(input.Content) != 2 {
+					t.Fatalf("input %d expected text and image content, got %d", idx, len(input.Content))
+				}
+				if input.Content[0].Type != "input_text" || input.Content[1].Type != "input_image" {
+					t.Fatalf("input %d expected text then image content, got %#v", idx, input.Content)
+				}
+				if idx == 0 && !strings.Contains(input.Content[0].Text, "Prior workspace snapshot") {
+					t.Fatalf("prior snapshot prompt missing context label: %q", input.Content[0].Text)
+				}
+				if idx == 1 && !strings.Contains(input.Content[0].Text, "Active mode") {
+					t.Fatalf("current snapshot prompt missing mode rules: %q", input.Content[0].Text)
+				}
+				if !strings.HasPrefix(input.Content[1].ImageURL, "data:image/jpeg;base64,") {
+					t.Fatalf("input %d expected image data URL, got %q", idx, input.Content[1].ImageURL)
+				}
+			}
+		}
+
+		body, err := json.Marshal(openAIResponsesResponse{OutputText: "Keep checking the next step."})
 		if err != nil {
 			return nil, err
 		}

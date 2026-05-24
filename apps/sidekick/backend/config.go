@@ -10,7 +10,7 @@ import (
 
 const (
 	defaultPort            = "8787"
-	defaultProvider        = "ollama"
+	defaultProvider        = "openai"
 	defaultOllamaModel     = "llama3.2-vision:11b"
 	defaultOllamaChatURL   = "http://localhost:11434/api/chat"
 	defaultMaxImageBytes   = 4 * 1024 * 1024
@@ -23,6 +23,9 @@ const (
 	defaultCaptureDir      = "captures"
 	defaultAudioCacheDir   = "audio_cache"
 	defaultMaxAudioBytes   = 512 * 1024
+
+	defaultOpenAIResponsesURL   = "https://api.openai.com/v1/responses"
+	defaultOpenAIResponsesModel = "gpt-5.5"
 
 	defaultOpenAITTSURL    = "https://api.openai.com/v1/audio/speech"
 	defaultOpenAITTSModel  = "gpt-4o-mini-tts"
@@ -45,6 +48,9 @@ type config struct {
 	Provider          string
 	OllamaModel       string
 	OllamaChatURL     string
+	OpenAIAPIKey      string
+	OpenAIURL         string
+	OpenAIModel       string
 	MaxImageBytes     int64
 	SharedSecret      string
 	RequestTimeout    time.Duration
@@ -95,6 +101,9 @@ func loadConfig() config {
 		Provider:          strings.ToLower(provider),
 		OllamaModel:       getenv("OLLAMA_MODEL", defaultOllamaModel),
 		OllamaChatURL:     getenv("OLLAMA_CHAT_URL", defaultOllamaChatURL),
+		OpenAIAPIKey:      os.Getenv("OPENAI_API_KEY"),
+		OpenAIURL:         getenv("OPENAI_RESPONSES_URL", defaultOpenAIResponsesURL),
+		OpenAIModel:       getenv("OPENAI_MODEL", defaultOpenAIResponsesModel),
 		MaxImageBytes:     getenvInt64("SIDEKICK_MAX_IMAGE_BYTES", defaultMaxImageBytes),
 		SharedSecret:      os.Getenv("SIDEKICK_SHARED_SECRET"),
 		RequestTimeout:    time.Duration(getenvInt64("SIDEKICK_TIMEOUT_SECONDS", defaultRequestTimeout)) * time.Second,
@@ -131,6 +140,17 @@ func loadConfig() config {
 			ElevenLabsModel:  getenv("ELEVENLABS_STT_MODEL", defaultElevenLabsSTTModel),
 			Language:         getenv("SIDEKICK_STT_LANGUAGE", getenv("OPENAI_TRANSCRIPTION_LANGUAGE", "en")),
 		},
+	}
+}
+
+func (cfg config) analysisModel() string {
+	switch cfg.Provider {
+	case "openai", "gpt":
+		return cfg.OpenAIModel
+	case "ollama":
+		return cfg.OllamaModel
+	default:
+		return ""
 	}
 }
 
