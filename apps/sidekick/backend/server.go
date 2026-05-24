@@ -28,6 +28,7 @@ type sidekickResponse struct {
 	LatencyMS     int64  `json:"latency_ms"`
 	AudioBase64   string `json:"audio_base64,omitempty"`
 	AudioFormat   string `json:"audio_format,omitempty"`
+	Transcript    string `json:"transcript,omitempty"`
 }
 
 type errorResponse struct {

@@ -22,11 +22,18 @@ const (
 	defaultMaxTTSChars     = 600
 	defaultCaptureDir      = "captures"
 	defaultAudioCacheDir   = "audio_cache"
+	defaultMaxAudioBytes   = 512 * 1024
 
 	defaultOpenAITTSURL    = "https://api.openai.com/v1/audio/speech"
 	defaultOpenAITTSModel  = "gpt-4o-mini-tts"
 	defaultOpenAITTSVoice  = "coral"
 	defaultOpenAITTSFormat = "wav"
+
+	defaultOpenAITranscriptionURL   = "https://api.openai.com/v1/audio/transcriptions"
+	defaultOpenAITranscriptionModel = "gpt-4o-mini-transcribe"
+
+	defaultElevenLabsSTTURL   = "https://api.elevenlabs.io/v1/speech-to-text"
+	defaultElevenLabsSTTModel = "scribe_v2"
 
 	defaultElevenLabsTTSURL       = "https://api.elevenlabs.io/v1/text-to-speech"
 	defaultElevenLabsTTSModel     = "eleven_flash_v2_5"
@@ -49,6 +56,7 @@ type config struct {
 	DefaultImageMIME  string
 	CaptureDir        string
 	TTS               ttsConfig
+	STT               sttConfig
 }
 
 type ttsConfig struct {
@@ -65,6 +73,18 @@ type ttsConfig struct {
 	ElevenLabsVoiceID      string
 	ElevenLabsModel        string
 	ElevenLabsOutputFormat string
+}
+
+type sttConfig struct {
+	Provider         string
+	MaxAudioBytes    int64
+	OpenAIAPIKey     string
+	OpenAIURL        string
+	OpenAIModel      string
+	ElevenLabsAPIKey string
+	ElevenLabsURL    string
+	ElevenLabsModel  string
+	Language         string
 }
 
 func loadConfig() config {
@@ -99,6 +119,17 @@ func loadConfig() config {
 			ElevenLabsVoiceID:      os.Getenv("ELEVENLABS_VOICE_ID"),
 			ElevenLabsModel:        getenv("ELEVENLABS_TTS_MODEL", defaultElevenLabsTTSModel),
 			ElevenLabsOutputFormat: getenv("ELEVENLABS_OUTPUT_FORMAT", defaultElevenLabsOutputFormat),
+		},
+		STT: sttConfig{
+			Provider:         strings.ToLower(getenv("SIDEKICK_STT_PROVIDER", "elevenlabs")),
+			MaxAudioBytes:    getenvInt64("SIDEKICK_MAX_AUDIO_BYTES", defaultMaxAudioBytes),
+			OpenAIAPIKey:     os.Getenv("OPENAI_API_KEY"),
+			OpenAIURL:        getenv("OPENAI_TRANSCRIPTION_URL", defaultOpenAITranscriptionURL),
+			OpenAIModel:      getenv("OPENAI_TRANSCRIPTION_MODEL", defaultOpenAITranscriptionModel),
+			ElevenLabsAPIKey: os.Getenv("ELEVENLABS_API_KEY"),
+			ElevenLabsURL:    getenv("ELEVENLABS_STT_URL", defaultElevenLabsSTTURL),
+			ElevenLabsModel:  getenv("ELEVENLABS_STT_MODEL", defaultElevenLabsSTTModel),
+			Language:         getenv("SIDEKICK_STT_LANGUAGE", getenv("OPENAI_TRANSCRIPTION_LANGUAGE", "en")),
 		},
 	}
 }

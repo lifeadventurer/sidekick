@@ -89,13 +89,18 @@ Optional environment variables:
 | `SIDEKICK_AI_FALLBACK` | `1` | Return demo-safe fallback JSON instead of HTTP 502 when Ollama fails (`0` disables) |
 | `SIDEKICK_VERBOSE` | `0` | Enable verbose model and response logs (`go run . -verbose` overrides this) |
 | `SIDEKICK_CAPTURE_DIR` | `captures` | Directory for incoming JPEG debug dumps (`off` to disable) |
+| `SIDEKICK_STT_PROVIDER` | `elevenlabs` | `elevenlabs`, `openai`, `fake`, or `none` for microphone transcription |
+| `SIDEKICK_MAX_AUDIO_BYTES` | `524288` | Max uploaded microphone PCM size |
+| `SIDEKICK_STT_LANGUAGE` | `en` | Optional ISO-639-1 language hint for transcription |
+| `ELEVENLABS_STT_MODEL` | `scribe_v2` | ElevenLabs speech-to-text model |
+| `OPENAI_TRANSCRIPTION_MODEL` | `gpt-4o-mini-transcribe` | OpenAI speech-to-text model |
 | `SIDEKICK_TTS_PROVIDER` | `none` | `none`, `openai`, or `elevenlabs` |
 | `SIDEKICK_TTS_MAX_CHARS` | `600` | Max text length accepted by `/sidekick/tts` |
-| `OPENAI_API_KEY` | empty | Required for `SIDEKICK_TTS_PROVIDER=openai` |
+| `OPENAI_API_KEY` | empty | Required for OpenAI transcription or `SIDEKICK_TTS_PROVIDER=openai` |
 | `OPENAI_TTS_MODEL` | `gpt-4o-mini-tts` | OpenAI speech model |
 | `OPENAI_TTS_VOICE` | `coral` | Default OpenAI voice |
 | `OPENAI_TTS_FORMAT` | `wav` | Default OpenAI output format |
-| `ELEVENLABS_API_KEY` | empty | Required for `SIDEKICK_TTS_PROVIDER=elevenlabs` |
+| `ELEVENLABS_API_KEY` | empty | Required for `SIDEKICK_STT_PROVIDER=elevenlabs` or `SIDEKICK_TTS_PROVIDER=elevenlabs` |
 | `ELEVENLABS_VOICE_ID` | empty | Required ElevenLabs voice ID |
 | `ELEVENLABS_TTS_MODEL` | `eleven_flash_v2_5` | ElevenLabs speech model |
 | `ELEVENLABS_OUTPUT_FORMAT` | `mp3_44100_128` | ElevenLabs output format |
@@ -158,6 +163,30 @@ API response has an empty message:
   "should_respond": false,
   "received_bytes": 12345,
   "latency_ms": 3
+}
+```
+
+Microphone request:
+
+```http
+POST /sidekick/audio?session=<id>&sample_rate=16000&channels=1&bits=16
+Content-Type: audio/L16
+
+<raw little-endian PCM bytes>
+```
+
+By default, the backend sends the raw PCM to ElevenLabs Scribe
+(`SIDEKICK_STT_PROVIDER=elevenlabs`), stores the transcript on the session, and
+attaches it to the next frame analysis. The alternate OpenAI provider wraps the
+same PCM bytes as WAV before transcription.
+
+```json
+{
+  "session_id": "demo",
+  "provider": "elevenlabs",
+  "transcript": "Can you explain the next step?",
+  "received_bytes": 64000,
+  "latency_ms": 412
 }
 ```
 

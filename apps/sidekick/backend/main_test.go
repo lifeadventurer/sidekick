@@ -7,6 +7,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"mime"
+	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -40,6 +42,17 @@ func testServer() *server {
 			ElevenLabsVoiceID:      "voice-test-id",
 			ElevenLabsModel:        defaultElevenLabsTTSModel,
 			ElevenLabsOutputFormat: defaultElevenLabsOutputFormat,
+		},
+		STT: sttConfig{
+			Provider:         "fake",
+			MaxAudioBytes:    defaultMaxAudioBytes,
+			OpenAIAPIKey:     "openai-test-key",
+			OpenAIURL:        defaultOpenAITranscriptionURL,
+			OpenAIModel:      defaultOpenAITranscriptionModel,
+			ElevenLabsAPIKey: "elevenlabs-test-key",
+			ElevenLabsURL:    defaultElevenLabsSTTURL,
+			ElevenLabsModel:  defaultElevenLabsSTTModel,
+			Language:         "en",
 		},
 	})
 }
@@ -204,6 +217,223 @@ func TestFrameOllamaProvider(t *testing.T) {
 	}
 	if !parsed.ShouldRespond {
 		t.Fatal("expected should_respond=true")
+	}
+}
+
+func TestFrameIncludesLatestTranscript(t *testing.T) {
+	srv := testServer()
+	srv.cfg.Provider = "ollama"
+	srv.cfg.OllamaChatURL = "http://ollama.test/api/chat"
+	srv.recordTranscript("voice-session", "Can you explain the next step?")
+
+	srv.client = &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		var payload ollamaChatRequest
+		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+			return nil, err
+		}
+		if len(payload.Messages) != 2 {
+			t.Fatalf("expected 2 messages, got %d", len(payload.Messages))
+		}
+		if !strings.Contains(payload.Messages[1].Content, "Can you explain the next step?") {
+			t.Fatalf("current frame prompt missing transcript: %q", payload.Messages[1].Content)
+		}
+
+		body, err := json.Marshal(ollamaChatResponse{
+			Message: ollamaMessage{
+				Role:    "assistant",
+				Content: "Look for the operation applied to both sides.",
+			},
+		})
+		if err != nil {
+			return nil, err
+		}
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Header:     make(http.Header),
+			Body:       io.NopCloser(bytes.NewReader(body)),
+		}, nil
+	})}
+
+	req := httptest.NewRequest(http.MethodPost, "/sidekick/frame?mode=hint&session=voice-session", bytes.NewReader([]byte("image")))
+	req.Header.Set("Content-Type", "image/jpeg")
+	rec := httptest.NewRecorder()
+
+	srv.handleFrame(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected %d, got %d body=%s", http.StatusOK, rec.Code, rec.Body.String())
+	}
+
+	var parsed sidekickResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &parsed); err != nil {
+		t.Fatal(err)
+	}
+	if parsed.Transcript != "Can you explain the next step?" {
+		t.Fatalf("expected transcript in response, got %q", parsed.Transcript)
+	}
+}
+
+func TestAudioFakeProviderStoresTranscript(t *testing.T) {
+	srv := testServer()
+	srv.cfg.STT.Provider = "fake"
+
+	req := httptest.NewRequest(http.MethodPost, "/sidekick/audio?session=mic-session", bytes.NewReader([]byte{1, 2, 3, 4}))
+	req.Header.Set("Content-Type", "audio/L16")
+	rec := httptest.NewRecorder()
+
+	srv.handleAudio(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected %d, got %d body=%s", http.StatusOK, rec.Code, rec.Body.String())
+	}
+	if got := srv.latestTranscript("mic-session"); got != "Student asked for help." {
+		t.Fatalf("unexpected stored transcript %q", got)
+	}
+}
+
+func TestAudioOpenAIProviderWrapsPCMAsWAV(t *testing.T) {
+	srv := testServer()
+	srv.cfg.STT.Provider = "openai"
+	srv.cfg.STT.OpenAIURL = "https://openai.test/v1/audio/transcriptions"
+
+	srv.client = &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		if r.Method != http.MethodPost {
+			t.Fatalf("expected POST, got %s", r.Method)
+		}
+		if r.URL.String() != srv.cfg.STT.OpenAIURL {
+			t.Fatalf("expected URL %q, got %q", srv.cfg.STT.OpenAIURL, r.URL.String())
+		}
+		if r.Header.Get("Authorization") != "Bearer openai-test-key" {
+			t.Fatalf("missing OpenAI authorization header")
+		}
+
+		mediaType, params, err := mime.ParseMediaType(r.Header.Get("Content-Type"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if mediaType != "multipart/form-data" {
+			t.Fatalf("expected multipart/form-data, got %q", mediaType)
+		}
+		reader := multipart.NewReader(r.Body, params["boundary"])
+		form, err := reader.ReadForm(1024 * 1024)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := form.Value["model"][0]; got != defaultOpenAITranscriptionModel {
+			t.Fatalf("unexpected model %q", got)
+		}
+		files := form.File["file"]
+		if len(files) != 1 {
+			t.Fatalf("expected one file, got %d", len(files))
+		}
+		file, err := files[0].Open()
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer file.Close()
+		wav, err := io.ReadAll(file)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !bytes.HasPrefix(wav, []byte("RIFF")) || string(wav[8:12]) != "WAVE" {
+			t.Fatalf("expected WAV payload, got header %q", wav[:12])
+		}
+		if !bytes.Equal(wav[len(wav)-4:], []byte{1, 2, 3, 4}) {
+			t.Fatalf("expected PCM bytes at end of WAV, got %v", wav[len(wav)-4:])
+		}
+
+		body := []byte(`{"text":"what does this equation mean?"}`)
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Header:     http.Header{"Content-Type": []string{"application/json"}},
+			Body:       io.NopCloser(bytes.NewReader(body)),
+		}, nil
+	})}
+
+	req := httptest.NewRequest(http.MethodPost, "/sidekick/audio?session=openai-mic&sample_rate=16000&channels=1&bits=16", bytes.NewReader([]byte{1, 2, 3, 4}))
+	req.Header.Set("Content-Type", "audio/L16")
+	rec := httptest.NewRecorder()
+
+	srv.handleAudio(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected %d, got %d body=%s", http.StatusOK, rec.Code, rec.Body.String())
+	}
+	if got := srv.latestTranscript("openai-mic"); got != "what does this equation mean?" {
+		t.Fatalf("unexpected stored transcript %q", got)
+	}
+}
+
+func TestAudioElevenLabsProviderSendsRawPCM(t *testing.T) {
+	srv := testServer()
+	srv.cfg.STT.Provider = "elevenlabs"
+	srv.cfg.STT.ElevenLabsURL = "https://api.elevenlabs.test/v1/speech-to-text"
+
+	srv.client = &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		if r.Method != http.MethodPost {
+			t.Fatalf("expected POST, got %s", r.Method)
+		}
+		if r.URL.String() != srv.cfg.STT.ElevenLabsURL {
+			t.Fatalf("expected URL %q, got %q", srv.cfg.STT.ElevenLabsURL, r.URL.String())
+		}
+		if r.Header.Get("xi-api-key") != "elevenlabs-test-key" {
+			t.Fatalf("missing ElevenLabs API key header")
+		}
+
+		mediaType, params, err := mime.ParseMediaType(r.Header.Get("Content-Type"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if mediaType != "multipart/form-data" {
+			t.Fatalf("expected multipart/form-data, got %q", mediaType)
+		}
+		reader := multipart.NewReader(r.Body, params["boundary"])
+		form, err := reader.ReadForm(1024 * 1024)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := form.Value["model_id"][0]; got != defaultElevenLabsSTTModel {
+			t.Fatalf("unexpected model_id %q", got)
+		}
+		if got := form.Value["file_format"][0]; got != "pcm_s16le_16" {
+			t.Fatalf("unexpected file_format %q", got)
+		}
+		files := form.File["file"]
+		if len(files) != 1 {
+			t.Fatalf("expected one file, got %d", len(files))
+		}
+		file, err := files[0].Open()
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer file.Close()
+		pcm, err := io.ReadAll(file)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !bytes.Equal(pcm, []byte{1, 2, 3, 4}) {
+			t.Fatalf("expected raw PCM bytes, got %v", pcm)
+		}
+
+		body := []byte(`{"text":"try factoring the left side"}`)
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Header:     http.Header{"Content-Type": []string{"application/json"}},
+			Body:       io.NopCloser(bytes.NewReader(body)),
+		}, nil
+	})}
+
+	req := httptest.NewRequest(http.MethodPost, "/sidekick/audio?session=elevenlabs-mic&sample_rate=16000&channels=1&bits=16", bytes.NewReader([]byte{1, 2, 3, 4}))
+	req.Header.Set("Content-Type", "audio/L16")
+	rec := httptest.NewRecorder()
+
+	srv.handleAudio(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected %d, got %d body=%s", http.StatusOK, rec.Code, rec.Body.String())
+	}
+	if got := srv.latestTranscript("elevenlabs-mic"); got != "try factoring the left side" {
+		t.Fatalf("unexpected stored transcript %q", got)
 	}
 }
 
@@ -781,4 +1011,3 @@ func TestTTSDiskCaching(t *testing.T) {
 		t.Fatalf("expected reloaded audio to be %q, got %q", "audio-on-disk-data", string(reloadedEntry.Audio))
 	}
 }
-

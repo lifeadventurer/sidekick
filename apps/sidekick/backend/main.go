@@ -18,6 +18,7 @@ func main() {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /health", srv.handleHealth)
 	mux.HandleFunc("POST /sidekick/frame", srv.handleFrame)
+	mux.HandleFunc("POST /sidekick/audio", srv.handleAudio)
 	mux.HandleFunc("POST /sidekick/session/end", srv.handleSessionEnd)
 	mux.HandleFunc("POST /sidekick/tts", srv.handleTTS)
 

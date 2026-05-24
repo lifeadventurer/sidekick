@@ -14,13 +14,16 @@ import (
 )
 
 type sessionState struct {
-	Frames []frameContext
+	Frames           []frameContext
+	LatestTranscript string
+	TranscriptAt     time.Time
 }
 
 type frameContext struct {
 	Image         []byte
 	Mode          string
 	Message       string
+	Transcript    string
 	ShouldRespond bool
 	ObservedAt    time.Time
 }
@@ -51,12 +54,12 @@ type ollamaChatResponse struct {
 	Error      string        `json:"error,omitempty"`
 }
 
-func (s *server) analyze(ctx context.Context, mode string, image []byte, priorFrames []frameContext, summary bool) (string, bool, string, error) {
+func (s *server) analyze(ctx context.Context, mode string, image []byte, priorFrames []frameContext, transcript string, summary bool) (string, bool, string, error) {
 	switch s.cfg.Provider {
 	case "fake", "mock", "":
 		return fakeMessage(mode, summary), true, "fake", nil
 	case "ollama":
-		message, err := s.callOllama(ctx, mode, image, priorFrames, summary)
+		message, err := s.callOllama(ctx, mode, image, priorFrames, transcript, summary)
 		if err != nil {
 			if s.cfg.FallbackOnAIError {
 				logWarn("ollama unavailable; returning fallback response", "error", err)
@@ -77,7 +80,7 @@ func (s *server) analyze(ctx context.Context, mode string, image []byte, priorFr
 	}
 }
 
-func (s *server) callOllama(_ context.Context, mode string, image []byte, priorFrames []frameContext, summary bool) (string, error) {
+func (s *server) callOllama(_ context.Context, mode string, image []byte, priorFrames []frameContext, transcript string, summary bool) (string, error) {
 	messages := []ollamaMessage{{
 		Role:    "system",
 		Content: tutorSystemPrompt(mode, summary),
@@ -88,6 +91,9 @@ func (s *server) callOllama(_ context.Context, mode string, image []byte, priorF
 	for idx, frame := range priorFrames {
 		content := fmt.Sprintf("Previous frame %d of %d. Mode=%s. Time=%s. Previous tutor message=%q. Compare this with later frames.",
 			idx+1, len(priorFrames), frame.Mode, frame.ObservedAt.Format(time.RFC3339), frame.Message)
+		if frame.Transcript != "" {
+			content += fmt.Sprintf(" Student speech near this frame: %q.", frame.Transcript)
+		}
 		messages = append(messages, ollamaMessage{
 			Role:    "user",
 			Content: content,
@@ -98,9 +104,13 @@ func (s *server) callOllama(_ context.Context, mode string, image []byte, priorF
 	}
 
 	if image != nil {
+		content := "Current frame. Compare it with the previous frames, infer progress or lack of motion, and respond with only the tutor message or NO_ACTION."
+		if strings.TrimSpace(transcript) != "" {
+			content += fmt.Sprintf(" Recent student speech transcript: %q. Treat it as the student's request or question when relevant.", strings.TrimSpace(transcript))
+		}
 		messages = append(messages, ollamaMessage{
 			Role:    "user",
-			Content: "Current frame. Compare it with the previous frames, infer progress or lack of motion, and respond with only the tutor message or NO_ACTION.",
+			Content: content,
 			Images:  []string{base64.StdEncoding.EncodeToString(image)},
 		})
 		imageCount++
@@ -192,7 +202,7 @@ func normalizeMode(mode string) string {
 }
 
 func tutorSystemPrompt(mode string, summary bool) string {
-	base := "You are SideKick, a visual AI tutor watching ordered snapshots from a student's desk. Compare the current frame with prior frames to infer motion, progress, pauses, and possible wrong direction. Respond with one short message suitable for a tiny device screen. Use at most 25 words. Do not explain your reasoning. Do not mention camera frames or images."
+	base := "You are SideKick, a visual AI tutor watching ordered snapshots from a student's desk and reading short transcripts of what the student says. Compare the current frame with prior frames to infer motion, progress, pauses, and possible wrong direction. Use speech as a direct question or intent when relevant. Respond with one short message suitable for a tiny device screen. Use at most 25 words. Do not explain your reasoning. Do not mention camera frames, images, or transcripts."
 	if summary {
 		return base + " The session has ended. Summarize what the student worked on, visible progress, and one concrete next step. Use at most 40 words in a single brief paragraph. Do not use bullet points. Never return NO_ACTION."
 	}

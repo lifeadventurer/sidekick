@@ -98,6 +98,51 @@ func (s *server) recordFrame(sessionID string, frame frameContext) {
 	}
 }
 
+func (s *server) recordTranscript(sessionID string, transcript string) {
+	transcript = strings.TrimSpace(transcript)
+	if transcript == "" {
+		return
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	state := s.sessions[sessionID]
+	if state == nil {
+		state = &sessionState{}
+		s.sessions[sessionID] = state
+	}
+	state.LatestTranscript = transcript
+	state.TranscriptAt = time.Now()
+}
+
+func (s *server) latestTranscript(sessionID string) string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	state := s.sessions[sessionID]
+	if state == nil {
+		return ""
+	}
+	return state.LatestTranscript
+}
+
+func (s *server) clearLatestTranscript(sessionID string, transcript string) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	state := s.sessions[sessionID]
+	if state == nil {
+		return false
+	}
+	if state.LatestTranscript != transcript {
+		return false
+	}
+	state.LatestTranscript = ""
+	state.TranscriptAt = time.Time{}
+	return true
+}
+
 func (s *server) clearSession(sessionID string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()

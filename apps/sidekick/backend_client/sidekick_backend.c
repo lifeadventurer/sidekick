@@ -40,6 +40,7 @@
 typedef enum {
     SIDEKICK_BACKEND_REQ_NONE = 0,
     SIDEKICK_BACKEND_REQ_FRAME,
+    SIDEKICK_BACKEND_REQ_AUDIO,
     SIDEKICK_BACKEND_REQ_SUMMARY,
 } SIDEKICK_BACKEND_REQ_E;
 
@@ -240,6 +241,62 @@ static OPERATE_RET sidekick_backend_speak(const char *message)
     return rt;
 }
 
+static void sidekick_backend_log_transcript(const http_client_response_t *response)
+{
+    if ((response == NULL) || (response->body == NULL) || (response->body_length == 0)) {
+        return;
+    }
+
+    cJSON *root = cJSON_ParseWithLength((const char *)response->body, response->body_length);
+    if (root == NULL) {
+        return;
+    }
+
+    cJSON *transcript = cJSON_GetObjectItem(root, "transcript");
+    if (cJSON_IsString(transcript) && (transcript->valuestring != NULL) && (transcript->valuestring[0] != '\0')) {
+        SIDEKICK_LOGI(SIDEKICK_BACKEND_TAG, "mic transcript: %s", transcript->valuestring);
+    }
+    cJSON_Delete(root);
+}
+
+static OPERATE_RET sidekick_backend_upload_microphone(void)
+{
+    OPERATE_RET rt      = OPRT_OK;
+    uint8_t    *pcm     = NULL;
+    uint32_t    pcm_len = 0;
+    uint32_t    min_len = (SIDEKICK_MIC_SAMPLE_RATE * SIDEKICK_MIC_CHANNELS * (SIDEKICK_MIC_BITS_PER_SAMPLE / 8) *
+                           SIDEKICK_MIC_UPLOAD_MIN_MS) /
+                          1000;
+    http_client_response_t response = {0};
+    char                   path[SIDEKICK_BACKEND_PATH_MAX];
+
+    if (!sidekick_backend_enabled() || !s_backend.network_inited || !sidekick_backend_network_ready()) {
+        return OPRT_OK;
+    }
+
+    TUYA_CALL_ERR_RETURN(sidekick_audio_drain_pcm(&pcm, &pcm_len));
+    if ((pcm == NULL) || (pcm_len < min_len)) {
+        if (pcm != NULL) {
+            tal_free(pcm);
+        }
+        return OPRT_OK;
+    }
+
+    snprintf(path, sizeof(path), "/sidekick/audio?session=%s&sample_rate=%u&channels=%u&bits=%u",
+             SIDEKICK_BACKEND_SESSION_ID, (unsigned int)SIDEKICK_MIC_SAMPLE_RATE, (unsigned int)SIDEKICK_MIC_CHANNELS,
+             (unsigned int)SIDEKICK_MIC_BITS_PER_SAMPLE);
+
+    SIDEKICK_LOGI(SIDEKICK_BACKEND_TAG, "uploading mic pcm bytes=%u", (unsigned int)pcm_len);
+    rt = sidekick_backend_post_content(path, pcm, pcm_len, "audio/L16", &response);
+    if (rt == OPRT_OK) {
+        sidekick_backend_log_transcript(&response);
+    }
+
+    tal_free(pcm);
+    http_client_free(&response);
+    return rt;
+}
+
 static bool sidekick_backend_handle_json(const http_client_response_t *response, char *message, size_t message_len,
                                          uint8_t **audio_out, size_t *audio_len_out)
 {
@@ -336,6 +393,8 @@ static OPERATE_RET sidekick_backend_upload_frame(void)
         SIDEKICK_LOGW(SIDEKICK_BACKEND_TAG, "network not ready; captured frame locally only");
         goto done;
     }
+
+    TUYA_CALL_ERR_LOG(sidekick_backend_upload_microphone());
 
     rt = sidekick_backend_post(path, jpeg, jpeg_len, &response);
     if (rt == OPRT_OK) {
@@ -439,6 +498,20 @@ static void sidekick_backend_worker(void *arg)
         sidekick_backend_set_busy(true);
         if (req == SIDEKICK_BACKEND_REQ_FRAME) {
             TUYA_CALL_ERR_LOG(sidekick_backend_upload_frame());
+        } else if (req == SIDEKICK_BACKEND_REQ_AUDIO) {
+            if (!s_backend.network_inited) {
+                SIDEKICK_LOGW(SIDEKICK_BACKEND_TAG, "network not initialized; skip microphone request");
+                sidekick_backend_set_busy(false);
+                continue;
+            }
+
+            if (!sidekick_backend_network_ready()) {
+                SIDEKICK_LOGW(SIDEKICK_BACKEND_TAG, "network not ready; skip microphone request");
+                sidekick_backend_set_busy(false);
+                continue;
+            }
+
+            TUYA_CALL_ERR_LOG(sidekick_backend_upload_microphone());
         } else if (req == SIDEKICK_BACKEND_REQ_SUMMARY) {
             if (!s_backend.network_inited) {
                 SIDEKICK_LOGW(SIDEKICK_BACKEND_TAG, "network not initialized; skip summary request");
@@ -535,6 +608,16 @@ void sidekick_backend_request_frame(void)
     }
 
     sidekick_backend_schedule(SIDEKICK_BACKEND_REQ_FRAME);
+}
+
+void sidekick_backend_request_microphone(void)
+{
+    if (!sidekick_backend_enabled()) {
+        return;
+    }
+
+    sidekick_backend_prepare_network();
+    sidekick_backend_schedule(SIDEKICK_BACKEND_REQ_AUDIO);
 }
 
 void sidekick_backend_end_session(void)
