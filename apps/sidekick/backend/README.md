@@ -184,6 +184,11 @@ pending utterance; silence keeps the pending utterance available until the next
 successful frame analysis consumes it. The alternate OpenAI provider wraps the
 same PCM bytes as WAV before transcription.
 
+Automatic device microphone uploads are disabled in the hackathon build. Set
+`SIDEKICK_ENABLE_MIC_TRANSCRIPTION` to `1` in
+`apps/sidekick/include/sidekick_config.h` to enable this retained experimental
+path.
+
 ```json
 {
   "session_id": "demo",

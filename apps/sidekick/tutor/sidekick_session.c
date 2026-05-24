@@ -43,8 +43,10 @@ void sidekick_session_tick(void)
 
     if ((s_tick_count % s_frame_interval_sec) == 0) {
         sidekick_backend_request_frame();
+#if SIDEKICK_ENABLE_MIC_TRANSCRIPTION
     } else if ((s_tick_count % SIDEKICK_MIC_UPLOAD_INTERVAL_SEC) == 0) {
         sidekick_backend_request_microphone();
+#endif
     }
 }
 

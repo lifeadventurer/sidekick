@@ -394,7 +394,9 @@ static OPERATE_RET sidekick_backend_upload_frame(void)
         goto done;
     }
 
+#if SIDEKICK_ENABLE_MIC_TRANSCRIPTION
     TUYA_CALL_ERR_LOG(sidekick_backend_upload_microphone());
+#endif
 
     rt = sidekick_backend_post(path, jpeg, jpeg_len, &response);
     if (rt == OPRT_OK) {
