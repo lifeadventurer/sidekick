@@ -6,6 +6,7 @@ __pycache__
 .clangd
 .cursor
 .target_logging
+.DS_Store
 
 CMakeCache.txt
 /CMakeFiles
