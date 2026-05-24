@@ -1,0 +1,137 @@
+name: SideKick CI
+
+on:
+  pull_request:
+    paths:
+      - ".github/pull_request_template.md"
+      - ".github/workflows/sidekick-ci.yml"
+      - "apps/sidekick/**"
+      - "export.sh"
+      - "pyproject.toml"
+      - "requirements.txt"
+      - "tos.py"
+      - "uv.lock"
+  push:
+    branches:
+      - main
+      - master
+      - dev
+    paths:
+      - ".github/pull_request_template.md"
+      - ".github/workflows/sidekick-ci.yml"
+      - "apps/sidekick/**"
+      - "export.sh"
+      - "pyproject.toml"
+      - "requirements.txt"
+      - "tos.py"
+      - "uv.lock"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: sidekick-ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  static-checks:
+    name: Static checks
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+        with:
+          show-progress: false
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@v8.1.0
+        with:
+          enable-cache: true
+
+      - name: Install clang-format
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y clang-format
+
+      - name: Install Python tooling
+        run: uv sync --dev
+
+      - name: Check workflow and project metadata
+        run: |
+          uv run pre-commit run check-yaml --files .github/workflows/sidekick-ci.yml
+          uv run pre-commit run check-toml --files pyproject.toml
+
+      - name: Check text hygiene
+        run: |
+          uv run pre-commit run end-of-file-fixer --files \
+            .github/workflows/sidekick-ci.yml \
+            .github/pull_request_template.md \
+            apps/sidekick/README.md
+          uv run pre-commit run trailing-whitespace --files \
+            .github/workflows/sidekick-ci.yml \
+            .github/pull_request_template.md \
+            apps/sidekick/README.md
+
+      - name: Check SideKick C formatting
+        run: |
+          git ls-files apps/sidekick | while read -r file; do
+            case "$file" in
+              *.c|*.h|*.cpp|*.hpp) clang-format --dry-run --Werror "$file" ;;
+            esac
+          done
+
+  sidekick-build:
+    name: Build SideKick firmware
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v6
+        with:
+          submodules: recursive
+          show-progress: false
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@v8.1.0
+        with:
+          enable-cache: true
+
+      - name: Cache TuyaOpen platform downloads
+        uses: actions/cache@v4
+        with:
+          path: |
+            platform/tools
+            platform/T5AI
+          key: tuyaopen-t5ai-${{ runner.os }}-${{ hashFiles('apps/sidekick/app_default.config', 'tos.py', 'requirements.txt', 'pyproject.toml', 'uv.lock') }}
+          restore-keys: |
+            tuyaopen-t5ai-${{ runner.os }}-
+
+      - name: Prepare TuyaOpen environment
+        run: |
+          mkdir -p .cache
+          touch .cache/.dont_prompt_update_platform
+          . ./export.sh
+          uv run python tos.py check
+
+      - name: Build SideKick app
+        run: |
+          . ./export.sh
+          cd apps/sidekick
+          uv run python ../../tos.py build
+
+      - name: Upload firmware artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: sidekick-firmware
+          path: apps/sidekick/dist/sidekick_*/sidekick_*.bin
+          if-no-files-found: error
