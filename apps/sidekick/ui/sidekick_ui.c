@@ -6,11 +6,11 @@
 #if defined(ENABLE_DISPLAY) && (ENABLE_DISPLAY == 1)
 #include "tdl_display_manage.h"
 
-#define SIDEKICK_COLOR_BG       sidekick_ui_color(0x10, 0x18, 0x28)
-#define SIDEKICK_COLOR_CARD     sidekick_ui_color(0x1D, 0x29, 0x39)
-#define SIDEKICK_COLOR_ACCENT   sidekick_ui_color(0x84, 0xCA, 0xFF)
-#define SIDEKICK_COLOR_DIM      sidekick_ui_color(0x47, 0x55, 0x67)
-#define SIDEKICK_COLOR_SELECTED sidekick_ui_color(0xB7, 0xE4, 0xC7)
+#define SIDEKICK_COLOR_BG         sidekick_ui_color(0x10, 0x18, 0x28)
+#define SIDEKICK_COLOR_CARD       sidekick_ui_color(0x1D, 0x29, 0x39)
+#define SIDEKICK_COLOR_ACCENT     sidekick_ui_color(0x84, 0xCA, 0xFF)
+#define SIDEKICK_COLOR_DIM        sidekick_ui_color(0x47, 0x55, 0x67)
+#define SIDEKICK_COLOR_SELECTED   sidekick_ui_color(0xB7, 0xE4, 0xC7)
 #define SIDEKICK_WORDMARK_LETTERS 8
 #define SIDEKICK_KICK_LETTERS     4
 #define SIDEKICK_GLYPH_WIDTH      5
@@ -24,13 +24,13 @@ typedef enum {
 
 static TDL_DISP_HANDLE_T      s_display_handle = NULL;
 static TDL_DISP_DEV_INFO_T    s_display_info;
-static TDL_DISP_FRAME_BUFF_T *s_display_fb     = NULL;
-static uint16_t               s_canvas_width   = 0;
-static uint16_t               s_canvas_height  = 0;
-static bool                   s_rotate_canvas  = false;
-static bool                   s_flip_canvas    = true;
-static SIDEKICK_UI_SCREEN_E   s_screen         = SIDEKICK_UI_SCREEN_HOME;
-static SIDEKICK_TUTOR_MODE_E  s_drawn_mode     = SIDEKICK_TUTOR_MODE_HINT;
+static TDL_DISP_FRAME_BUFF_T *s_display_fb    = NULL;
+static uint16_t               s_canvas_width  = 0;
+static uint16_t               s_canvas_height = 0;
+static bool                   s_rotate_canvas = false;
+static bool                   s_flip_canvas   = true;
+static SIDEKICK_UI_SCREEN_E   s_screen        = SIDEKICK_UI_SCREEN_HOME;
+static SIDEKICK_TUTOR_MODE_E  s_drawn_mode    = SIDEKICK_TUTOR_MODE_HINT;
 
 static uint32_t sidekick_ui_color(uint8_t red, uint8_t green, uint8_t blue)
 {
@@ -159,7 +159,7 @@ static OPERATE_RET sidekick_ui_draw_home_screen(void)
     uint16_t    height   = s_canvas_height;
     uint16_t    unit     = height / 28;
     uint16_t    max_unit = (width > 16) ? ((width - 16) / (SIDEKICK_WORDMARK_LETTERS * SIDEKICK_GLYPH_WIDTH +
-                                                          (SIDEKICK_WORDMARK_LETTERS - 1) * SIDEKICK_GLYPH_SPACING))
+                                                        (SIDEKICK_WORDMARK_LETTERS - 1) * SIDEKICK_GLYPH_SPACING))
                                         : 1;
     uint16_t    word_w;
     uint16_t    word_x;
@@ -192,10 +192,9 @@ static OPERATE_RET sidekick_ui_draw_home_screen(void)
     kick_unit = (button_h / (SIDEKICK_GLYPH_HEIGHT + 2));
     kick_w    = sidekick_ui_text_width(SIDEKICK_KICK_LETTERS, kick_unit);
     if (kick_w > (button_w - unit * 2)) {
-        kick_unit = (button_w - unit * 2) /
-                    (SIDEKICK_KICK_LETTERS * SIDEKICK_GLYPH_WIDTH +
-                     (SIDEKICK_KICK_LETTERS - 1) * SIDEKICK_GLYPH_SPACING);
-        kick_w = sidekick_ui_text_width(SIDEKICK_KICK_LETTERS, kick_unit);
+        kick_unit = (button_w - unit * 2) / (SIDEKICK_KICK_LETTERS * SIDEKICK_GLYPH_WIDTH +
+                                             (SIDEKICK_KICK_LETTERS - 1) * SIDEKICK_GLYPH_SPACING);
+        kick_w    = sidekick_ui_text_width(SIDEKICK_KICK_LETTERS, kick_unit);
     }
 
     if (kick_unit < 3) {
@@ -204,9 +203,9 @@ static OPERATE_RET sidekick_ui_draw_home_screen(void)
     }
 
     kick_x = button_x + ((button_w > kick_w) ? ((button_w - kick_w) / 2) : unit);
-    kick_y = button_y + ((button_h > kick_unit * SIDEKICK_GLYPH_HEIGHT) ?
-                         ((button_h - kick_unit * SIDEKICK_GLYPH_HEIGHT) / 2) :
-                         unit);
+    kick_y =
+        button_y +
+        ((button_h > kick_unit * SIDEKICK_GLYPH_HEIGHT) ? ((button_h - kick_unit * SIDEKICK_GLYPH_HEIGHT) / 2) : unit);
 
     TUYA_CALL_ERR_RETURN(tdl_disp_draw_fill_full(s_display_fb, SIDEKICK_COLOR_BG, s_display_info.is_swap));
     TUYA_CALL_ERR_RETURN(sidekick_ui_fill_rect(card_x, card_y, card_w, card_h, SIDEKICK_COLOR_CARD));
@@ -227,7 +226,7 @@ static OPERATE_RET sidekick_ui_draw_mode_screen(void)
     uint16_t    height   = s_canvas_height;
     uint16_t    unit     = height / 28;
     uint16_t    max_unit = (width > 16) ? ((width - 16) / (SIDEKICK_WORDMARK_LETTERS * SIDEKICK_GLYPH_WIDTH +
-                                                          (SIDEKICK_WORDMARK_LETTERS - 1) * SIDEKICK_GLYPH_SPACING))
+                                                        (SIDEKICK_WORDMARK_LETTERS - 1) * SIDEKICK_GLYPH_SPACING))
                                         : 1;
     uint16_t    word_w;
     uint16_t    word_x;
