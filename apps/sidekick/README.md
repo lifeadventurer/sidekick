@@ -9,7 +9,7 @@ This app is the product scaffold. Keep hardware bring-up experiments in
 ## Current Scope
 
 - Register T5AI board hardware.
-- Show the SideKick home screen on the LCD with LVGL.
+- Show the SideKick home screen on the LCD.
 - Use touch on the home screen to cycle tutor modes:
   `Active -> Hint -> Summary`.
 - Open microphone input and count captured PCM frames.
@@ -45,6 +45,4 @@ module and camera:
 CONFIG_BOARD_CHOICE_T5AI=y
 CONFIG_TUYA_T5AI_BOARD_EX_MODULE_35565LCD=y
 CONFIG_ENABLE_EX_MODULE_CAMERA=y
-CONFIG_ENABLE_LIBLVGL=y
-CONFIG_LVGL_ENABLE_TP=y
 ```
