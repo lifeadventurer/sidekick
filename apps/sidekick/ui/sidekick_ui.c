@@ -15,8 +15,6 @@
 #define SIDEKICK_COLOR_SELECTED   sidekick_ui_color(0xB7, 0xE4, 0xC7)
 #define SIDEKICK_WORDMARK_LETTERS 8
 #define SIDEKICK_KICK_LETTERS     4
-#define SIDEKICK_SPEAKER_LETTERS  7
-#define SIDEKICK_CAMERA_LETTERS   6
 #define SIDEKICK_GLYPH_WIDTH      5
 #define SIDEKICK_GLYPH_SPACING    1
 #define SIDEKICK_GLYPH_HEIGHT     7
@@ -163,6 +161,24 @@ static uint16_t sidekick_ui_text_width(uint16_t letter_count, uint16_t unit)
     return text_units * unit;
 }
 
+static void sidekick_ui_tests_layout(uint16_t *home_x, uint16_t *home_y, uint16_t *home_size, uint16_t *speaker_x,
+                                     uint16_t *speaker_y, uint16_t *camera_x, uint16_t *camera_y, uint16_t *card_w,
+                                     uint16_t *card_h)
+{
+    uint16_t width  = s_canvas_width;
+    uint16_t height = s_canvas_height;
+
+    *home_size = height / 5;
+    *home_x    = width / 16;
+    *home_y    = height / 12;
+    *card_w    = width / 3;
+    *card_h    = height / 2;
+    *speaker_x = width / 9;
+    *speaker_y = height / 3;
+    *camera_x  = width - *speaker_x - *card_w;
+    *camera_y  = *speaker_y;
+}
+
 static bool sidekick_ui_point_in_rect(uint16_t x, uint16_t y, uint16_t rect_x, uint16_t rect_y, uint16_t rect_w,
                                       uint16_t rect_h)
 {
@@ -186,6 +202,60 @@ static void sidekick_ui_map_touch(uint16_t raw_x, uint16_t raw_y, uint16_t *canv
 
     *canvas_x = x;
     *canvas_y = y;
+}
+
+static void sidekick_ui_draw_home_icon(uint16_t x, uint16_t y, uint16_t size, uint32_t color)
+{
+    OPERATE_RET rt   = OPRT_OK;
+    uint16_t    unit = size / 8;
+    uint16_t    base_x;
+    uint16_t    base_y;
+
+    if (unit == 0) {
+        unit = 1;
+    }
+
+    base_x = x + unit * 2;
+    base_y = y + unit * 4;
+
+    TUYA_CALL_ERR_LOG(sidekick_ui_fill_rect(base_x, base_y, unit * 4, unit * 3, color));
+    TUYA_CALL_ERR_LOG(sidekick_ui_fill_rect(base_x + unit, base_y + unit, unit * 2, unit * 2, SIDEKICK_COLOR_BG));
+
+    for (uint8_t step = 0; step < 4; step++) {
+        TUYA_CALL_ERR_LOG(
+            sidekick_ui_fill_rect(x + unit * (3 - step), y + unit * (step + 1), unit * (step * 2 + 2), unit, color));
+    }
+}
+
+static void sidekick_ui_draw_speaker_icon(uint16_t x, uint16_t y, uint16_t size, uint32_t color)
+{
+    OPERATE_RET rt   = OPRT_OK;
+    uint16_t    unit = size / 10;
+
+    if (unit == 0) {
+        unit = 1;
+    }
+
+    TUYA_CALL_ERR_LOG(sidekick_ui_fill_rect(x + unit, y + unit * 4, unit * 2, unit * 3, color));
+    TUYA_CALL_ERR_LOG(sidekick_ui_fill_rect(x + unit * 3, y + unit * 3, unit, unit * 5, color));
+    TUYA_CALL_ERR_LOG(sidekick_ui_fill_rect(x + unit * 4, y + unit * 2, unit, unit * 7, color));
+    TUYA_CALL_ERR_LOG(sidekick_ui_fill_rect(x + unit * 6, y + unit * 3, unit, unit * 5, color));
+    TUYA_CALL_ERR_LOG(sidekick_ui_fill_rect(x + unit * 8, y + unit * 2, unit, unit * 7, color));
+}
+
+static void sidekick_ui_draw_camera_icon(uint16_t x, uint16_t y, uint16_t size, uint32_t color)
+{
+    OPERATE_RET rt   = OPRT_OK;
+    uint16_t    unit = size / 10;
+
+    if (unit == 0) {
+        unit = 1;
+    }
+
+    TUYA_CALL_ERR_LOG(sidekick_ui_fill_rect(x + unit, y + unit * 3, unit * 8, unit * 5, color));
+    TUYA_CALL_ERR_LOG(sidekick_ui_fill_rect(x + unit * 3, y + unit * 2, unit * 4, unit, color));
+    TUYA_CALL_ERR_LOG(sidekick_ui_fill_rect(x + unit * 4, y + unit * 4, unit * 2, unit * 2, SIDEKICK_COLOR_BG));
+    TUYA_CALL_ERR_LOG(sidekick_ui_fill_rect(x + unit * 5, y + unit * 5, unit, unit, color));
 }
 
 static OPERATE_RET sidekick_ui_draw_home_screen(void)
@@ -256,52 +326,33 @@ static OPERATE_RET sidekick_ui_draw_home_screen(void)
 
 static OPERATE_RET sidekick_ui_draw_tests_screen(void)
 {
-    OPERATE_RET rt           = OPRT_OK;
-    uint16_t    width        = s_canvas_width;
-    uint16_t    height       = s_canvas_height;
-    uint16_t    unit         = height / 32;
-    uint16_t    button_x     = width / 10;
-    uint16_t    button_w     = width - (button_x * 2);
-    uint16_t    speaker_y    = height / 8;
-    uint16_t    camera_y     = height * 58 / 100;
-    uint16_t    button_h     = height / 3;
-    uint16_t    speaker_w;
-    uint16_t    camera_w;
-    uint16_t    speaker_unit = unit;
-    uint16_t    camera_unit  = unit;
+    OPERATE_RET rt = OPRT_OK;
+    uint16_t    home_x;
+    uint16_t    home_y;
+    uint16_t    home_size;
     uint16_t    speaker_x;
+    uint16_t    speaker_y;
     uint16_t    camera_x;
-    uint16_t    text_y_pad;
+    uint16_t    camera_y;
+    uint16_t    card_w;
+    uint16_t    card_h;
+    uint16_t    icon_size;
 
-    if (unit < 3) {
-        unit = 3;
-        speaker_unit = unit;
-        camera_unit  = unit;
-    }
-
-    speaker_w = sidekick_ui_text_width(SIDEKICK_SPEAKER_LETTERS, speaker_unit);
-    if (speaker_w > (button_w - unit * 2)) {
-        speaker_unit = (button_w - unit * 2) / (SIDEKICK_SPEAKER_LETTERS * SIDEKICK_GLYPH_WIDTH +
-                                                (SIDEKICK_SPEAKER_LETTERS - 1) * SIDEKICK_GLYPH_SPACING);
-        speaker_w    = sidekick_ui_text_width(SIDEKICK_SPEAKER_LETTERS, speaker_unit);
-    }
-
-    camera_w = sidekick_ui_text_width(SIDEKICK_CAMERA_LETTERS, camera_unit);
-    if (camera_w > (button_w - unit * 2)) {
-        camera_unit = (button_w - unit * 2) / (SIDEKICK_CAMERA_LETTERS * SIDEKICK_GLYPH_WIDTH +
-                                               (SIDEKICK_CAMERA_LETTERS - 1) * SIDEKICK_GLYPH_SPACING);
-        camera_w    = sidekick_ui_text_width(SIDEKICK_CAMERA_LETTERS, camera_unit);
-    }
-
-    speaker_x  = button_x + ((button_w > speaker_w) ? ((button_w - speaker_w) / 2) : unit);
-    camera_x   = button_x + ((button_w > camera_w) ? ((button_w - camera_w) / 2) : unit);
-    text_y_pad = (button_h > (unit * SIDEKICK_GLYPH_HEIGHT)) ? ((button_h - unit * SIDEKICK_GLYPH_HEIGHT) / 2) : unit;
+    sidekick_ui_tests_layout(&home_x, &home_y, &home_size, &speaker_x, &speaker_y, &camera_x, &camera_y, &card_w,
+                             &card_h);
+    icon_size = (card_h < card_w) ? (card_h * 3 / 4) : (card_w * 3 / 4);
 
     TUYA_CALL_ERR_RETURN(tdl_disp_draw_fill_full(s_display_fb, SIDEKICK_COLOR_BG, s_display_info.is_swap));
-    TUYA_CALL_ERR_RETURN(sidekick_ui_fill_rect(button_x, speaker_y, button_w, button_h, SIDEKICK_COLOR_SELECTED));
-    TUYA_CALL_ERR_RETURN(sidekick_ui_fill_rect(button_x, camera_y, button_w, button_h, SIDEKICK_COLOR_ACCENT));
-    sidekick_ui_draw_block_text("SPEAKER", speaker_x, speaker_y + text_y_pad, speaker_unit, SIDEKICK_COLOR_BG);
-    sidekick_ui_draw_block_text("CAMERA", camera_x, camera_y + text_y_pad, camera_unit, SIDEKICK_COLOR_BG);
+    TUYA_CALL_ERR_RETURN(sidekick_ui_fill_rect(home_x, home_y, home_size, home_size, SIDEKICK_COLOR_CARD));
+    TUYA_CALL_ERR_RETURN(sidekick_ui_fill_rect(speaker_x, speaker_y, card_w, card_h, SIDEKICK_COLOR_SELECTED));
+    TUYA_CALL_ERR_RETURN(sidekick_ui_fill_rect(camera_x, camera_y, card_w, card_h, SIDEKICK_COLOR_ACCENT));
+
+    sidekick_ui_draw_home_icon(home_x + home_size / 8, home_y + home_size / 8, home_size * 3 / 4,
+                               SIDEKICK_COLOR_ACCENT);
+    sidekick_ui_draw_speaker_icon(speaker_x + ((card_w - icon_size) / 2), speaker_y + ((card_h - icon_size) / 2),
+                                  icon_size, SIDEKICK_COLOR_BG);
+    sidekick_ui_draw_camera_icon(camera_x + ((card_w - icon_size) / 2), camera_y + ((card_h - icon_size) / 2),
+                                 icon_size, SIDEKICK_COLOR_BG);
 
     TUYA_CALL_ERR_RETURN(tdl_disp_dev_flush(s_display_handle, s_display_fb));
     return OPRT_OK;
@@ -382,8 +433,8 @@ static OPERATE_RET sidekick_ui_display_start(void)
 
 #define SIDEKICK_UI_MAX_TOUCH_POINTS 2
 
-static TDL_TP_HANDLE_T s_tp_handle  = NULL;
-static bool            s_touch_down = false;
+static TDL_TP_HANDLE_T s_tp_handle   = NULL;
+static bool            s_touch_down  = false;
 static bool            s_touch_armed = false;
 #endif
 
@@ -465,23 +516,37 @@ void sidekick_ui_poll(void)
     }
 
 #if defined(ENABLE_DISPLAY) && (ENABLE_DISPLAY == 1)
-    uint16_t canvas_x = 0;
-    uint16_t canvas_y = 0;
-    uint16_t button_x = s_canvas_width / 10;
-    uint16_t button_w = s_canvas_width - (button_x * 2);
-    uint16_t button_h = s_canvas_height / 3;
-    uint16_t speaker_y = s_canvas_height / 8;
-    uint16_t camera_y = s_canvas_height * 58 / 100;
+    uint16_t canvas_x  = 0;
+    uint16_t canvas_y  = 0;
+    uint16_t home_x    = 0;
+    uint16_t home_y    = 0;
+    uint16_t home_size = 0;
+    uint16_t speaker_x = 0;
+    uint16_t speaker_y = 0;
+    uint16_t camera_x  = 0;
+    uint16_t camera_y  = 0;
+    uint16_t card_w    = 0;
+    uint16_t card_h    = 0;
 
     sidekick_ui_map_touch(points[0].x, points[0].y, &canvas_x, &canvas_y);
-    if (sidekick_ui_point_in_rect(canvas_x, canvas_y, button_x, speaker_y, button_w, button_h)) {
+    sidekick_ui_tests_layout(&home_x, &home_y, &home_size, &speaker_x, &speaker_y, &camera_x, &camera_y, &card_w,
+                             &card_h);
+
+    if (sidekick_ui_point_in_rect(canvas_x, canvas_y, home_x, home_y, home_size, home_size)) {
+        SIDEKICK_LOGI("ui", "home");
+        s_screen = SIDEKICK_UI_SCREEN_HOME;
+        TUYA_CALL_ERR_LOG(sidekick_ui_draw_screen());
+        return;
+    }
+
+    if (sidekick_ui_point_in_rect(canvas_x, canvas_y, speaker_x, speaker_y, card_w, card_h)) {
         SIDEKICK_LOGI("ui", "speaker test");
         TUYA_CALL_ERR_LOG(sidekick_audio_play_startup_chime());
         TUYA_CALL_ERR_LOG(sidekick_ui_draw_screen());
         return;
     }
 
-    if (sidekick_ui_point_in_rect(canvas_x, canvas_y, button_x, camera_y, button_w, button_h)) {
+    if (sidekick_ui_point_in_rect(canvas_x, canvas_y, camera_x, camera_y, card_w, card_h)) {
         SIDEKICK_LOGI("ui", "camera test");
         s_screen = SIDEKICK_UI_SCREEN_CAMERA;
         TUYA_CALL_ERR_LOG(sidekick_camera_preview_start());

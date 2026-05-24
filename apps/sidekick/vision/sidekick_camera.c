@@ -11,10 +11,10 @@
 
 static TDL_DISP_HANDLE_T      s_display_handle = NULL;
 static TDL_DISP_DEV_INFO_T    s_display_info;
-static TDL_FB_MANAGE_HANDLE_T s_fb_manage     = NULL;
-static TDL_CAMERA_HANDLE_T    s_camera_handle = NULL;
-static bool                   s_display_ready = false;
-static bool                   s_camera_open   = false;
+static TDL_FB_MANAGE_HANDLE_T s_fb_manage      = NULL;
+static TDL_CAMERA_HANDLE_T    s_camera_handle  = NULL;
+static bool                   s_display_ready  = false;
+static bool                   s_camera_open    = false;
 static bool                   s_preview_active = false;
 
 static OPERATE_RET sidekick_camera_frame_cb(TDL_CAMERA_HANDLE_T hdl, TDL_CAMERA_FRAME_T *frame)
