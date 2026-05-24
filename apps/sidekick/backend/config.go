@@ -16,6 +16,7 @@ const (
 	defaultMaxImageBytes   = 4 * 1024 * 1024
 	defaultMaxOutputTokens = 256
 	defaultContextFrames   = 3
+	defaultFrameTTLSeconds = 120
 	defaultRequestTimeout  = 45
 	defaultSessionID       = "default"
 	defaultTTSProvider     = "none"
@@ -55,6 +56,7 @@ type config struct {
 	RequestTimeout     time.Duration
 	MaxOutputTokens    int
 	ContextFrames      int
+	FrameTTL           time.Duration
 	FallbackOnAIError  bool
 	Verbose            bool
 	AllowMultipart     bool
@@ -108,6 +110,7 @@ func loadConfig() config {
 		RequestTimeout:     time.Duration(getenvInt64("SIDEKICK_TIMEOUT_SECONDS", defaultRequestTimeout)) * time.Second,
 		MaxOutputTokens:    int(getenvInt64("SIDEKICK_MAX_OUTPUT_TOKENS", defaultMaxOutputTokens)),
 		ContextFrames:      int(getenvInt64("SIDEKICK_CONTEXT_FRAMES", defaultContextFrames)),
+		FrameTTL:           time.Duration(getenvInt64("SIDEKICK_FRAME_TTL_SECONDS", defaultFrameTTLSeconds)) * time.Second,
 		FallbackOnAIError:  getenvBool("SIDEKICK_AI_FALLBACK", true),
 		Verbose:            getenvBool("SIDEKICK_VERBOSE", false),
 		AllowMultipart:     getenv("SIDEKICK_ALLOW_MULTIPART", "1") != "0",

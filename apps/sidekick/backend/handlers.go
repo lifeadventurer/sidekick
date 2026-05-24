@@ -233,10 +233,12 @@ func (s *server) handleTTS(w http.ResponseWriter, r *http.Request) {
 	var found bool
 
 	if entry, found = s.getCachedTTS(key); !found {
-		// Try prefix match on cached keys (in case of client truncation)
+		// Try prefix match on cached keys (in case of client truncation).
+		// Require the request key to cover at least 80% of the cached key
+		// to avoid false positives on short or unrelated messages.
 		s.mu.Lock()
 		for cachedKey, cachedEntry := range s.ttsCache {
-			if len(key) >= 10 && strings.HasPrefix(cachedKey, key) {
+			if len(key) >= 20 && len(key)*100/len(cachedKey) >= 80 && strings.HasPrefix(cachedKey, key) {
 				entry = cachedEntry
 				found = true
 				if s.cfg.Verbose {

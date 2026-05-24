@@ -70,10 +70,15 @@ func (s *server) sessionFrames(sessionID string) []frameContext {
 		return nil
 	}
 
-	frames := make([]frameContext, len(state.Frames))
-	for idx, frame := range state.Frames {
-		frames[idx] = frame
-		frames[idx].Image = append([]byte(nil), frame.Image...)
+	now := time.Now()
+	var frames []frameContext
+	for _, frame := range state.Frames {
+		if s.cfg.FrameTTL > 0 && now.Sub(frame.ObservedAt) > s.cfg.FrameTTL {
+			continue
+		}
+		copied := frame
+		copied.Image = append([]byte(nil), frame.Image...)
+		frames = append(frames, copied)
 	}
 	return frames
 }
@@ -86,6 +91,18 @@ func (s *server) recordFrame(sessionID string, frame frameContext) {
 	if state == nil {
 		state = &sessionState{}
 		s.sessions[sessionID] = state
+	}
+
+	// Prune expired frames before appending.
+	if s.cfg.FrameTTL > 0 {
+		now := time.Now()
+		alive := state.Frames[:0]
+		for _, f := range state.Frames {
+			if now.Sub(f.ObservedAt) <= s.cfg.FrameTTL {
+				alive = append(alive, f)
+			}
+		}
+		state.Frames = alive
 	}
 
 	state.Frames = append(state.Frames, frame)
