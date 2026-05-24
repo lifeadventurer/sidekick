@@ -11,19 +11,17 @@ import (
 )
 
 func testServer() *server {
-	return &server{
-		cfg: config{
-			Provider:         "fake",
-			OllamaModel:      defaultOllamaModel,
-			OllamaChatURL:    defaultOllamaChatURL,
-			MaxImageBytes:    defaultMaxImageBytes,
-			RequestTimeout:   2 * time.Second,
-			DefaultImageMIME: "image/jpeg",
-			AllowMultipart:   true,
-			MaxOutputTokens:  120,
-		},
-		client: &http.Client{Timeout: 2 * time.Second},
-	}
+	return newServer(config{
+		Provider:         "fake",
+		OllamaModel:      defaultOllamaModel,
+		OllamaChatURL:    defaultOllamaChatURL,
+		MaxImageBytes:    defaultMaxImageBytes,
+		RequestTimeout:   2 * time.Second,
+		DefaultImageMIME: "image/jpeg",
+		AllowMultipart:   true,
+		MaxOutputTokens:  120,
+		ContextFrames:    2,
+	})
 }
 
 func TestHealth(t *testing.T) {
@@ -72,6 +70,9 @@ func TestFrameFakeProvider(t *testing.T) {
 	if parsed.Message == "" {
 		t.Fatal("expected non-empty message")
 	}
+	if !parsed.ShouldRespond {
+		t.Fatal("expected fake provider to respond")
+	}
 }
 
 func TestFrameOllamaProvider(t *testing.T) {
@@ -95,6 +96,9 @@ func TestFrameOllamaProvider(t *testing.T) {
 		}
 		if payload.Stream {
 			t.Fatal("expected non-streaming request")
+		}
+		if payload.Think {
+			t.Fatal("expected think=false request")
 		}
 		if len(payload.Messages) != 2 {
 			t.Fatalf("expected 2 messages, got %d", len(payload.Messages))
@@ -139,6 +143,169 @@ func TestFrameOllamaProvider(t *testing.T) {
 	}
 	if parsed.Message != "Check the sign before you simplify." {
 		t.Fatalf("unexpected message %q", parsed.Message)
+	}
+	if !parsed.ShouldRespond {
+		t.Fatal("expected should_respond=true")
+	}
+}
+
+func TestOllamaNoAction(t *testing.T) {
+	srv := testServer()
+	srv.cfg.Provider = "ollama"
+	srv.cfg.OllamaChatURL = "http://ollama.test/api/chat"
+	srv.client = &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		body, err := json.Marshal(ollamaChatResponse{
+			Message: ollamaMessage{
+				Role:    "assistant",
+				Content: "NO_ACTION",
+			},
+		})
+		if err != nil {
+			return nil, err
+		}
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Header:     make(http.Header),
+			Body:       io.NopCloser(bytes.NewReader(body)),
+		}, nil
+	})}
+
+	req := httptest.NewRequest(http.MethodPost, "/sidekick/frame?mode=hint", bytes.NewReader([]byte("image")))
+	req.Header.Set("Content-Type", "image/jpeg")
+	rec := httptest.NewRecorder()
+
+	srv.handleFrame(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected %d, got %d body=%s", http.StatusOK, rec.Code, rec.Body.String())
+	}
+
+	var parsed sidekickResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &parsed); err != nil {
+		t.Fatal(err)
+	}
+	if parsed.ShouldRespond {
+		t.Fatal("expected should_respond=false")
+	}
+	if parsed.Message != "" {
+		t.Fatalf("expected empty message, got %q", parsed.Message)
+	}
+}
+
+func TestSlidingFrameContext(t *testing.T) {
+	srv := testServer()
+
+	for idx := 0; idx < 3; idx++ {
+		req := httptest.NewRequest(http.MethodPost, "/sidekick/frame?mode=active&session=abc", bytes.NewReader([]byte{byte(idx + 1)}))
+		req.Header.Set("Content-Type", "image/jpeg")
+		rec := httptest.NewRecorder()
+
+		srv.handleFrame(rec, req)
+
+		if rec.Code != http.StatusOK {
+			t.Fatalf("frame %d expected %d, got %d", idx, http.StatusOK, rec.Code)
+		}
+	}
+
+	frames := srv.sessionFrames("abc")
+	if len(frames) != 2 {
+		t.Fatalf("expected 2 retained frames, got %d", len(frames))
+	}
+	if frames[0].Image[0] != 2 || frames[1].Image[0] != 3 {
+		t.Fatalf("expected last two frames, got %v and %v", frames[0].Image, frames[1].Image)
+	}
+}
+
+func TestOllamaUsesPriorFrameContext(t *testing.T) {
+	srv := testServer()
+	srv.cfg.Provider = "ollama"
+	srv.cfg.OllamaChatURL = "http://ollama.test/api/chat"
+
+	requestCount := 0
+	srv.client = &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		requestCount++
+		var payload ollamaChatRequest
+		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+			return nil, err
+		}
+		if requestCount == 2 {
+			if len(payload.Messages) != 3 {
+				t.Fatalf("expected system, previous frame, current frame messages; got %d", len(payload.Messages))
+			}
+			if len(payload.Messages[1].Images) != 1 || len(payload.Messages[2].Images) != 1 {
+				t.Fatalf("expected previous and current images in second request")
+			}
+		}
+
+		body, err := json.Marshal(ollamaChatResponse{
+			Message: ollamaMessage{Role: "assistant", Content: "Keep checking the next step."},
+		})
+		if err != nil {
+			return nil, err
+		}
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Header:     make(http.Header),
+			Body:       io.NopCloser(bytes.NewReader(body)),
+		}, nil
+	})}
+
+	for idx := 0; idx < 2; idx++ {
+		req := httptest.NewRequest(http.MethodPost, "/sidekick/frame?mode=active&session=abc", bytes.NewReader([]byte{byte(idx + 1)}))
+		req.Header.Set("Content-Type", "image/jpeg")
+		rec := httptest.NewRecorder()
+
+		srv.handleFrame(rec, req)
+
+		if rec.Code != http.StatusOK {
+			t.Fatalf("frame %d expected %d, got %d body=%s", idx, http.StatusOK, rec.Code, rec.Body.String())
+		}
+	}
+}
+
+func TestSessionEndSummary(t *testing.T) {
+	srv := testServer()
+
+	req := httptest.NewRequest(http.MethodPost, "/sidekick/frame?mode=hint&session=abc", bytes.NewReader([]byte("image")))
+	req.Header.Set("Content-Type", "image/jpeg")
+	rec := httptest.NewRecorder()
+	srv.handleFrame(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("frame expected %d, got %d", http.StatusOK, rec.Code)
+	}
+
+	endReq := httptest.NewRequest(http.MethodPost, "/sidekick/session/end?session=abc", nil)
+	endRec := httptest.NewRecorder()
+	srv.handleSessionEnd(endRec, endReq)
+	if endRec.Code != http.StatusOK {
+		t.Fatalf("summary expected %d, got %d body=%s", http.StatusOK, endRec.Code, endRec.Body.String())
+	}
+
+	var parsed sidekickResponse
+	if err := json.Unmarshal(endRec.Body.Bytes(), &parsed); err != nil {
+		t.Fatal(err)
+	}
+	if parsed.Mode != "summary" {
+		t.Fatalf("expected summary mode, got %q", parsed.Mode)
+	}
+	if parsed.Message == "" {
+		t.Fatal("expected summary message")
+	}
+	if len(srv.sessionFrames("abc")) != 0 {
+		t.Fatal("expected session to be cleared after summary")
+	}
+}
+
+func TestSummaryModeRejectedForFrame(t *testing.T) {
+	srv := testServer()
+
+	req := httptest.NewRequest(http.MethodPost, "/sidekick/frame?mode=summary", bytes.NewReader([]byte("image")))
+	req.Header.Set("Content-Type", "image/jpeg")
+	rec := httptest.NewRecorder()
+	srv.handleFrame(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("expected %d, got %d", http.StatusBadRequest, rec.Code)
 	}
 }
 
