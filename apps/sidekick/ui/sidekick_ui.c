@@ -609,22 +609,22 @@ static OPERATE_RET sidekick_ui_start_session_preview(void)
 
 static OPERATE_RET sidekick_ui_draw_home_screen(void)
 {
-    OPERATE_RET rt       = OPRT_OK;
-    uint16_t    width    = s_canvas_width;
-    uint16_t    height   = s_canvas_height;
-    uint16_t    unit     = height / 28;
-    uint16_t    max_unit = (width > 16) ? ((width - 16) / (SIDEKICK_WORDMARK_LETTERS * SIDEKICK_GLYPH_WIDTH +
-                                                           (SIDEKICK_WORDMARK_LETTERS - 1) * SIDEKICK_GLYPH_SPACING))
-                                        : 1;
-    uint16_t    word_w;
-    uint16_t    word_x;
-    uint16_t    word_y;
-    uint16_t    button_unit;
-    uint16_t    kick_x;
-    uint16_t    test_x;
-    uint16_t    button_y;
-    uint16_t    button_w;
-    uint16_t    button_h;
+    OPERATE_RET rt     = OPRT_OK;
+    uint16_t    width  = s_canvas_width;
+    uint16_t    height = s_canvas_height;
+    uint16_t    unit   = height / 28;
+    uint16_t    wordmark_w =
+        SIDEKICK_WORDMARK_LETTERS * SIDEKICK_GLYPH_WIDTH + (SIDEKICK_WORDMARK_LETTERS - 1) * SIDEKICK_GLYPH_SPACING;
+    uint16_t max_unit = (width > 16) ? ((width - 16) / wordmark_w) : 1;
+    uint16_t word_w;
+    uint16_t word_x;
+    uint16_t word_y;
+    uint16_t button_unit;
+    uint16_t kick_x;
+    uint16_t test_x;
+    uint16_t button_y;
+    uint16_t button_w;
+    uint16_t button_h;
 
     if ((max_unit > 0) && (unit > max_unit)) {
         unit = max_unit;
