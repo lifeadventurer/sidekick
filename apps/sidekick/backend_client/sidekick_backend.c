@@ -13,6 +13,7 @@
 #include "cJSON.h"
 #include "http_client_interface.h"
 #include "netmgr.h"
+#include "sidekick_audio.h"
 #include "sidekick_camera.h"
 #include "sidekick_config.h"
 #include "sidekick_log.h"
@@ -29,10 +30,11 @@
 #include "netconn_wired.h"
 #endif
 
-#define SIDEKICK_BACKEND_TAG          "backend"
-#define SIDEKICK_BACKEND_PATH_MAX     160
-#define SIDEKICK_BACKEND_MESSAGE_MAX  256
-#define SIDEKICK_BACKEND_THREAD_STACK (1024 * 8)
+#define SIDEKICK_BACKEND_TAG            "backend"
+#define SIDEKICK_BACKEND_PATH_MAX       160
+#define SIDEKICK_BACKEND_MESSAGE_MAX    256
+#define SIDEKICK_BACKEND_HTTP_HEADER_CT "Content-Type"
+#define SIDEKICK_BACKEND_THREAD_STACK   (1024 * 8)
 
 typedef enum {
     SIDEKICK_BACKEND_REQ_NONE = 0,
@@ -113,11 +115,11 @@ static bool sidekick_backend_network_ready(void)
     return (status == NETMGR_LINK_UP) || (status == NETMGR_LINK_UP_SWITH);
 }
 
-static OPERATE_RET sidekick_backend_post(const char *path, const uint8_t *body, size_t body_len,
-                                         http_client_response_t *response)
+static OPERATE_RET sidekick_backend_post_content(const char *path, const uint8_t *body, size_t body_len,
+                                                 const char *content_type, http_client_response_t *response)
 {
     http_client_header_t headers[] = {
-        {.key = "Content-Type", .value = body_len > 0 ? "image/jpeg" : "application/json"},
+        {.key = SIDEKICK_BACKEND_HTTP_HEADER_CT, .value = content_type},
     };
 
     http_client_status_t http_rt = http_client_request(
@@ -147,18 +149,112 @@ static OPERATE_RET sidekick_backend_post(const char *path, const uint8_t *body, 
     return OPRT_OK;
 }
 
-static void sidekick_backend_handle_json(const http_client_response_t *response)
+static OPERATE_RET sidekick_backend_post(const char *path, const uint8_t *body, size_t body_len,
+                                         http_client_response_t *response)
 {
-    char message[SIDEKICK_BACKEND_MESSAGE_MAX] = {0};
+    const char *content_type = (body_len > 0) ? "image/jpeg" : "application/json";
+
+    return sidekick_backend_post_content(path, body, body_len, content_type, response);
+}
+
+static const uint8_t *sidekick_backend_wav_payload(const uint8_t *audio, size_t audio_len, size_t *payload_len)
+{
+    size_t pos = 12;
+
+    *payload_len = audio_len;
+    if ((audio_len < 44) || (memcmp(audio, "RIFF", 4) != 0) || (memcmp(audio + 8, "WAVE", 4) != 0)) {
+        return audio;
+    }
+
+    while ((pos + 8) <= audio_len) {
+        uint32_t chunk_len = (uint32_t)audio[pos + 4] | ((uint32_t)audio[pos + 5] << 8) |
+                             ((uint32_t)audio[pos + 6] << 16) | ((uint32_t)audio[pos + 7] << 24);
+
+        if (memcmp(audio + pos, "data", 4) == 0) {
+            pos += 8;
+            if ((pos + chunk_len) > audio_len) {
+                chunk_len = audio_len - pos;
+            }
+            *payload_len = chunk_len;
+            return audio + pos;
+        }
+
+        pos += 8 + chunk_len + (chunk_len & 1U);
+    }
+
+    return audio;
+}
+
+static OPERATE_RET sidekick_backend_speak(const char *message)
+{
+    OPERATE_RET            rt       = OPRT_OK;
+    cJSON                 *root     = NULL;
+    char                  *body     = NULL;
+    http_client_response_t response = {0};
+    size_t                 pcm_len  = 0;
+    const uint8_t         *pcm      = NULL;
+
+    if ((message == NULL) || (message[0] == '\0')) {
+        return OPRT_OK;
+    }
+
+    root = cJSON_CreateObject();
+    if (root == NULL) {
+        return OPRT_MALLOC_FAILED;
+    }
+
+    if ((cJSON_AddStringToObject(root, "text", message) == NULL) ||
+        (cJSON_AddStringToObject(root, "format", SIDEKICK_TTS_OUTPUT_FORMAT) == NULL)) {
+        cJSON_Delete(root);
+        return OPRT_MALLOC_FAILED;
+    }
+
+    body = cJSON_PrintUnformatted(root);
+    cJSON_Delete(root);
+    if (body == NULL) {
+        return OPRT_MALLOC_FAILED;
+    }
+
+    SIDEKICK_LOGI(SIDEKICK_BACKEND_TAG, "requesting TTS len=%u", (unsigned int)strlen(message));
+    rt = sidekick_backend_post_content("/sidekick/tts", (const uint8_t *)body, strlen(body), "application/json",
+                                       &response);
+    cJSON_free(body);
+    if (rt != OPRT_OK) {
+        http_client_free(&response);
+        return rt;
+    }
+
+    if ((response.body == NULL) || (response.body_length == 0)) {
+        SIDEKICK_LOGW(SIDEKICK_BACKEND_TAG, "TTS response was empty");
+        http_client_free(&response);
+        return OPRT_COM_ERROR;
+    }
+
+    pcm = sidekick_backend_wav_payload(response.body, response.body_length, &pcm_len);
+    SIDEKICK_LOGI(SIDEKICK_BACKEND_TAG, "TTS audio bytes=%u pcm_bytes=%u", (unsigned int)response.body_length,
+                  (unsigned int)pcm_len);
+    rt = sidekick_audio_play_pcm(pcm, (uint32_t)pcm_len);
+
+    http_client_free(&response);
+    return rt;
+}
+
+static bool sidekick_backend_handle_json(const http_client_response_t *response, char *message, size_t message_len)
+{
+    bool should_speak = false;
 
     if ((response == NULL) || (response->body == NULL) || (response->body_length == 0)) {
-        return;
+        return false;
+    }
+
+    if ((message == NULL) || (message_len == 0)) {
+        return false;
     }
 
     cJSON *root = cJSON_ParseWithLength((const char *)response->body, response->body_length);
     if (root == NULL) {
         SIDEKICK_LOGW(SIDEKICK_BACKEND_TAG, "failed to parse backend json");
-        return;
+        return false;
     }
 
     cJSON *should_respond = cJSON_GetObjectItem(root, "should_respond");
@@ -166,13 +262,17 @@ static void sidekick_backend_handle_json(const http_client_response_t *response)
 
     bool respond = cJSON_IsTrue(should_respond);
     if (respond && cJSON_IsString(message_item) && (message_item->valuestring != NULL)) {
-        strncpy(message, message_item->valuestring, sizeof(message) - 1);
+        strncpy(message, message_item->valuestring, message_len - 1);
+        should_speak = message[0] != '\0';
         SIDEKICK_LOGI(SIDEKICK_BACKEND_TAG, "AI: %s", message);
     } else {
-        SIDEKICK_LOGI(SIDEKICK_BACKEND_TAG, "AI: no action");
+        SIDEKICK_LOGI(SIDEKICK_BACKEND_TAG, "AI: no action respond=%d has_message=%d", respond ? 1 : 0,
+                      cJSON_IsString(message_item) ? 1 : 0);
     }
 
     cJSON_Delete(root);
+
+    return should_speak;
 }
 
 static OPERATE_RET sidekick_backend_upload_frame(void)
@@ -182,7 +282,9 @@ static OPERATE_RET sidekick_backend_upload_frame(void)
     uint32_t               jpeg_len = 0;
     http_client_response_t response = {0};
     char                   path[SIDEKICK_BACKEND_PATH_MAX];
-    const char            *mode = sidekick_session_mode_name(sidekick_session_mode());
+    char                   message[SIDEKICK_BACKEND_MESSAGE_MAX] = {0};
+    bool                   should_speak                          = false;
+    const char            *mode                                  = sidekick_session_mode_name(sidekick_session_mode());
 
     snprintf(path, sizeof(path), "/sidekick/frame?mode=%s&session=%s", mode, SIDEKICK_BACKEND_SESSION_ID);
 
@@ -206,7 +308,7 @@ static OPERATE_RET sidekick_backend_upload_frame(void)
 
     rt = sidekick_backend_post(path, jpeg, jpeg_len, &response);
     if (rt == OPRT_OK) {
-        sidekick_backend_handle_json(&response);
+        should_speak = sidekick_backend_handle_json(&response, message, sizeof(message));
     }
 
 done:
@@ -214,6 +316,11 @@ done:
         (void)sidekick_camera_free_jpeg(&jpeg);
     }
     http_client_free(&response);
+
+    if (should_speak) {
+        SIDEKICK_LOGI(SIDEKICK_BACKEND_TAG, "frame response has speech; requesting TTS");
+        TUYA_CALL_ERR_LOG(sidekick_backend_speak(message));
+    }
     return rt;
 }
 
@@ -221,15 +328,24 @@ static OPERATE_RET sidekick_backend_request_summary(void)
 {
     http_client_response_t response = {0};
     char                   path[SIDEKICK_BACKEND_PATH_MAX];
-    OPERATE_RET            rt = OPRT_OK;
+    char                   message[SIDEKICK_BACKEND_MESSAGE_MAX] = {0};
+    bool                   should_speak                          = false;
+    OPERATE_RET            rt                                    = OPRT_OK;
 
     snprintf(path, sizeof(path), "/sidekick/session/end?session=%s", SIDEKICK_BACKEND_SESSION_ID);
     rt = sidekick_backend_post(path, NULL, 0, &response);
     if (rt == OPRT_OK) {
-        sidekick_backend_handle_json(&response);
+        should_speak = sidekick_backend_handle_json(&response, message, sizeof(message));
     }
 
     http_client_free(&response);
+
+    if (should_speak) {
+        SIDEKICK_LOGI(SIDEKICK_BACKEND_TAG, "summary response has speech; requesting TTS");
+        TUYA_CALL_ERR_LOG(sidekick_backend_speak(message));
+    } else if (rt == OPRT_OK) {
+        SIDEKICK_LOGW(SIDEKICK_BACKEND_TAG, "summary response had no speakable message");
+    }
     return rt;
 }
 

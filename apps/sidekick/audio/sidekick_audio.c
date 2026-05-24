@@ -1,12 +1,21 @@
+/**
+ * @file sidekick_audio.c
+ * @brief SideKick audio input and speaker playback helpers.
+ *
+ * @copyright Copyright (c) 2026 SideKick Contributors. All Rights Reserved.
+ *
+ */
 #include "sidekick_audio.h"
 
 #include "sidekick_log.h"
+#include "tal_api.h"
 
 #if defined(ENABLE_AUDIO_CODECS) && (ENABLE_AUDIO_CODECS == 1)
 #include "tdl_audio_manage.h"
 
-#define SIDEKICK_CHIME_FRAME_SAMPLES 320
-#define SIDEKICK_CHIME_REPEAT_FRAMES 2
+#define SIDEKICK_CHIME_FRAME_SAMPLES  320
+#define SIDEKICK_CHIME_REPEAT_FRAMES  2
+#define SIDEKICK_PCM_PLAY_CHUNK_BYTES 640
 
 static TDL_AUDIO_HANDLE_T s_audio_handle = NULL;
 static uint32_t           s_audio_frames = 0;
@@ -70,6 +79,49 @@ OPERATE_RET sidekick_audio_play_startup_chime(void)
     SIDEKICK_LOGI("audio", "startup chime played");
     return OPRT_OK;
 #else
+    return OPRT_OK;
+#endif
+}
+
+OPERATE_RET sidekick_audio_play_pcm(const uint8_t *pcm, uint32_t len)
+{
+#if defined(ENABLE_AUDIO_CODECS) && (ENABLE_AUDIO_CODECS == 1)
+    OPERATE_RET rt     = OPRT_OK;
+    uint32_t    offset = 0;
+
+    if ((pcm == NULL) || (len < 2)) {
+        return OPRT_OK;
+    }
+
+    if (s_audio_handle == NULL) {
+        SIDEKICK_LOGW("audio", "pcm playback skipped; audio is not open");
+        return OPRT_OK;
+    }
+
+    len &= ~1U;
+    TUYA_CALL_ERR_LOG(tdl_audio_volume_set(s_audio_handle, 80));
+
+    while (offset < len) {
+        uint32_t chunk = len - offset;
+
+        if (chunk > SIDEKICK_PCM_PLAY_CHUNK_BYTES) {
+            chunk = SIDEKICK_PCM_PLAY_CHUNK_BYTES;
+        }
+
+        rt = tdl_audio_play(s_audio_handle, (uint8_t *)(pcm + offset), chunk);
+        if (rt != OPRT_OK) {
+            SIDEKICK_LOGW("audio", "pcm playback failed rt=%d", rt);
+            return rt;
+        }
+        offset += chunk;
+        tal_system_sleep(10);
+    }
+
+    SIDEKICK_LOGI("audio", "pcm playback queued len=%u", (unsigned int)len);
+    return OPRT_OK;
+#else
+    (void)pcm;
+    (void)len;
     return OPRT_OK;
 #endif
 }
